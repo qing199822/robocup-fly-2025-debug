@@ -1,0 +1,4 @@
+gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin
+/home/hjh/ZZU_FLY_source/devel/.private/ros_actor_cmd_pose_plugin/share/ros_actor_cmd_pose_plugin/cmake/ros_actor_cmd_pose_pluginConfig-version.cmake /home/hjh/ZZU_FLY_source/devel/share/ros_actor_cmd_pose_plugin/cmake/ros_actor_cmd_pose_pluginConfig-version.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/ros_actor_cmd_pose_plugin/share/ros_actor_cmd_pose_plugin/cmake/ros_actor_cmd_pose_pluginConfig.cmake /home/hjh/ZZU_FLY_source/devel/share/ros_actor_cmd_pose_plugin/cmake/ros_actor_cmd_pose_pluginConfig.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/ros_actor_cmd_pose_plugin/lib/pkgconfig/ros_actor_cmd_pose_plugin.pc /home/hjh/ZZU_FLY_source/devel/lib/pkgconfig/ros_actor_cmd_pose_plugin.pc

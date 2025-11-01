@@ -1,0 +1,266 @@
+#!/usr/bin/env python
+# coding: utf-8
+import rospy
+import tf2_ros
+import tf.transformations as tft
+import tf2_geometry_msgs
+import numpy as np
+import math
+import re
+import sys
+
+# 訊息類型
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+from geometry_msgs.msg import PointStamped, TransformStamped
+from nav_msgs.msg import Odometry
+from tf2_msgs.msg import TFMessage
+from darknet_ros_msgs.msg import BoundingBoxes, BoundingBox
+from actor_msgs.msg import ActorInfo
+
+# 工具
+from cv_bridge import CvBridge
+
+class CoordinateEstimator:
+    """
+    處理目標檢測結果，並估算其在世界座標系中的位置。
+    """
+    ROI_HALF_SIZE = 2  # 5x5 的感興趣區域（ROI）
+
+    def __init__(self):
+        """
+        初始化節點、參數、訂閱者和發布者。
+        """
+        # 1. 節點初始化
+        self.robot_name = sys.argv[1]
+        rospy.init_node(f'coordinate_estimator_node_{self.robot_name}', anonymous=False)
+        rospy.loginfo(f"節點 'coordinate_estimator_node_{self.robot_name}' 啟動中...")
+
+        # 2. 工具和狀態變數
+        self.cv_bridge = CvBridge()
+        self.latest_depth_frame = None
+        self.active_tracking_id = None
+        self.last_tracking_update_time = rospy.Time(0)
+        
+        # 3. 讀取ROS參數
+        self._load_ros_params()
+
+        # 4. TF2 設置
+        self.transform_buffer = tf2_ros.Buffer()
+        self.transform_listener = tf2_ros.TransformListener(self.transform_buffer)
+
+        # 5. Actor 配置映射
+        self.actor_definitions = {
+            0: {'color': 'green', 'topic': '/actor_green_info'},
+            1: {'color': 'blue',  'topic': '/actor_blue_info'},
+            2: {'color': 'brown', 'topic': '/actor_brown_info'},
+            3: {'color': 'white', 'topic': '/actor_white_info'},
+            4: {'color': 'red',   'topic': '/actor_red1_info'},
+            5: {'color': 'red',   'topic': '/actor_red2_info'}
+        }
+
+        # 6. 初始化ROS發布者
+        self.actor_publishers = self._create_actor_publishers()
+        
+        # 7. 初始化ROS訂閱者
+        self._setup_subscriptions()
+
+        rospy.loginfo("座標估算器初始化完成，等待訊息...")
+
+    def _load_ros_params(self):
+        """從參數伺服器載入相機內參和座標系名稱。"""
+        self.camera_frame_id = rospy.get_param("~camera_frame", "camera_optical_link")
+        self.target_frame_id = rospy.get_param("~target_frame", "ground_plane")
+        self.cam_fx = rospy.get_param("~fx", 205.47)
+        self.cam_fy = rospy.get_param("~fy", 205.47)
+        self.cam_cx = rospy.get_param("~cx", 320)
+        self.cam_cy = rospy.get_param("~cy", 240)
+        self.tracking_timeout_duration = rospy.Duration(rospy.get_param("~tracking_timeout", 1.0))
+
+    def _create_actor_publishers(self):
+        """根據 actor_definitions 字典創建並返回所有發布者。"""
+        publishers = {}
+        for actor_id, config in self.actor_definitions.items():
+            topic = config['topic']
+            publishers[actor_id] = rospy.Publisher(topic, ActorInfo, queue_size=1)
+            rospy.loginfo(f"為 Actor ID {actor_id} 創建發布者，話題: {topic}")
+        return publishers
+
+    def _setup_subscriptions(self):
+        """設置所有的ROS訂閱者。"""
+        # TF 訊息訂閱
+        rospy.Subscriber(f"/{self.robot_name}/tf", TFMessage, self._tf_callback)
+        rospy.Subscriber("/tf_static", TFMessage, self._tf_static_callback)
+
+        # 感測器和檢測結果訂閱
+        rospy.Subscriber(f"/{self.robot_name}/realsense/depth_camera/depth/image_raw", Image, self._depth_image_callback, queue_size=1)
+        rospy.Subscriber(f"/{self.robot_name}/yolo11n/bounding_boxes", BoundingBoxes, self.bounding_box_callback, queue_size=1)
+        
+        # 追踪狀態訂閱
+        tracking_topic = f"/{self.robot_name}/tracking_node/yolo_human_tracking_{self.robot_name}"
+        rospy.Subscriber(tracking_topic, String, self._tracking_status_callback)
+
+    # --- 回呼函數 ---
+
+    def _tf_callback(self, tf_message):
+        """處理動態TF變換訊息。"""
+        for transform in tf_message.transforms:
+            self.transform_buffer.set_transform(transform, "default_authority")
+
+    def _tf_static_callback(self, tf_message):
+        """處理靜態TF變換訊息。"""
+        for transform in tf_message.transforms:
+            self.transform_buffer.set_transform_static(transform, "default_authority")
+
+    def _depth_image_callback(self, image_msg):
+        """將ROS Image訊息轉換為OpenCV格式並儲存。"""
+        try:
+            self.latest_depth_frame = self.cv_bridge.imgmsg_to_cv2(image_msg, desired_encoding="passthrough")
+        except Exception as e:
+            rospy.logwarn(f"深度圖像轉換失敗: {e}")
+            self.latest_depth_frame = None
+
+    def _tracking_status_callback(self, status_msg):
+        """解析並更新當前追踪的目標ID。"""
+        try:
+            parts = status_msg.data.split(':')
+            if len(parts) == 3 and parts[0] in ["TRACKING", "DASH"]:
+                self.active_tracking_id = parts[1]  # 例如 "red4"
+                self.last_tracking_update_time = rospy.Time.now()
+            else:
+                self.active_tracking_id = None
+        except Exception as e:
+            rospy.logwarn(f"解析追踪狀態時出錯: {e}")
+
+    def bounding_box_callback(self, detections_msg):
+        """
+        處理檢測到的邊界框的主回呼函數。
+        """
+        if self.latest_depth_frame is None:
+            rospy.logwarn_throttle(2, "深度圖像尚未接收，跳過處理。")
+            return
+
+        if not self._is_tracking_active():
+            rospy.loginfo_throttle(5, "目前無活躍追踪目標，不進行座標計算。")
+            return
+
+        for detection in detections_msg.bounding_boxes:
+            # 只處理與當前追踪目標匹配的檢測框
+            if detection.Class != self.active_tracking_id:
+                continue
+
+            try:
+                # 1. 獲取ROI的平均深度
+                center_u = int((detection.xmin + detection.xmax) / 2)
+                center_v = int((detection.ymin + detection.ymax) / 2)
+                
+                mean_depth = self._get_roi_mean_depth(center_u, center_v)
+                if mean_depth is None:
+                    rospy.logwarn(f"無法獲取 '{detection.Class}' 在 ({center_u}, {center_v}) 的有效深度。")
+                    continue
+
+                # 2. 計算在相機座標系下的3D點
+                point_in_camera = self._calculate_3d_point(center_u, center_v, mean_depth)
+
+                # 3. 轉換座標到目標座標系 (e.g., ground_plane)
+                point_in_target_frame = self._transform_point(point_in_camera, self.target_frame_id)
+                if point_in_target_frame is None:
+                    continue
+                
+                # 4. 根據ID發布ActorInfo訊息
+                self._publish_actor_info(detection.Class, point_in_target_frame)
+
+            except Exception as e:
+                rospy.logerr(f"處理邊界框 '{detection.Class}' 時發生未知錯誤: {e}")
+
+    # --- 輔助方法 ---
+
+    def _is_tracking_active(self):
+        """檢查追踪狀態是否在超時範圍內保持活躍。"""
+        is_active = (self.active_tracking_id is not None and
+                     (rospy.Time.now() - self.last_tracking_update_time) < self.tracking_timeout_duration)
+        return is_active
+
+    def _get_roi_mean_depth(self, u, v):
+        """從深度圖像的一個小區域（ROI）中計算有效的平均深度值。"""
+        h, w = self.latest_depth_frame.shape
+        
+        # 定義ROI邊界
+        u_min = max(0, u - self.ROI_HALF_SIZE)
+        u_max = min(w - 1, u + self.ROI_HALF_SIZE)
+        v_min = max(0, v - self.ROI_HALF_SIZE)
+        v_max = min(h - 1, v + self.ROI_HALF_SIZE)
+
+        # 提取ROI並過濾無效值
+        roi = self.latest_depth_frame[v_min:v_max+1, u_min:u_max+1]
+        valid_depths = roi[(roi > 0) & np.isfinite(roi)]
+
+        if valid_depths.size == 0:
+            return None
+
+        # 計算平均深度並處理單位（假設原始單位為毫米）
+        mean_depth_mm = np.mean(valid_depths)
+        return mean_depth_mm / 1000.0 if mean_depth_mm > 100 else mean_depth_mm
+
+    def _calculate_3d_point(self, u, v, depth_in_meters):
+        """根據像素座標和深度，計算在相機座標系中的3D點。"""
+        x = (u - self.cam_cx) * depth_in_meters / self.cam_fx
+        y = (v - self.cam_cy) * depth_in_meters / self.cam_fy
+        z = depth_in_meters
+        
+        point = PointStamped()
+        point.header.frame_id = self.camera_frame_id
+        point.header.stamp = rospy.Time(0) # 使用最新的可用變換
+        point.point.x = x
+        point.point.y = y
+        point.point.z = z
+        return point
+
+    def _transform_point(self, point_stamped, target_frame):
+        """使用TF2將一個點從源座標系轉換到目標座標系。"""
+        try:
+            return self.transform_buffer.transform(point_stamped, target_frame, timeout=rospy.Duration(0.5))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+            rospy.logwarn(f"TF座標變換失敗從 {point_stamped.header.frame_id} 到 {target_frame}: {e}")
+            return None
+
+    def _publish_actor_info(self, class_name, final_point):
+        """根據目標類別名稱，填充並發布ActorInfo訊息。"""
+        match = re.search(r'\d+', class_name)
+        if not match:
+            rospy.logwarn_throttle(5, f"無法從類別名稱 '{class_name}' 中提取ID。")
+            return
+        
+        actor_id = int(match.group(0))
+
+        if actor_id in self.actor_publishers:
+            config = self.actor_definitions[actor_id]
+            publisher = self.actor_publishers[actor_id]
+            
+            # 處理red4和red5的特殊映射
+            if class_name == "red4":
+                publisher = self.actor_publishers[4]
+            elif class_name == "red5":
+                publisher = self.actor_publishers[5]
+
+            actor_message = ActorInfo(
+                cls=config['color'],
+                x=final_point.point.x,
+                y=final_point.point.y
+            )
+            
+            publisher.publish(actor_message)
+            rospy.loginfo(f"發布 {class_name} ({config['color']}) 位置到話題 '{publisher.name}': "
+                          f"x={actor_message.x:.3f}, y={actor_message.y:.3f}")
+        else:
+            rospy.logwarn(f"檢測到未配置的 Actor ID: {actor_id}。")
+
+
+if __name__ == '__main__':
+    try:
+        estimator = CoordinateEstimator()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        rospy.loginfo("節點已關閉。")
+    except Exception as e:
+        rospy.logfatal(f"節點因致命錯誤而崩潰: {e}")

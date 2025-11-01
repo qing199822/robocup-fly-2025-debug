@@ -1,0 +1,6 @@
+mix_nav/task_manager
+/home/hjh/ZZU_FLY_source/devel/.private/task_manager/share/task_manager/cmake/task_managerConfig-version.cmake /home/hjh/ZZU_FLY_source/devel/share/task_manager/cmake/task_managerConfig-version.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/task_manager/share/task_manager/cmake/task_managerConfig.cmake /home/hjh/ZZU_FLY_source/devel/share/task_manager/cmake/task_managerConfig.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/task_manager/lib/libmission_manager_lib.so /home/hjh/ZZU_FLY_source/devel/lib/libmission_manager_lib.so
+/home/hjh/ZZU_FLY_source/devel/.private/task_manager/lib/task_manager/multi_mission_launcher /home/hjh/ZZU_FLY_source/devel/lib/task_manager/multi_mission_launcher
+/home/hjh/ZZU_FLY_source/devel/.private/task_manager/lib/pkgconfig/task_manager.pc /home/hjh/ZZU_FLY_source/devel/lib/pkgconfig/task_manager.pc

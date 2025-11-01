@@ -1,0 +1,6 @@
+velodyne_gazebo_plugins
+/home/hjh/ZZU_FLY/devel/.private/velodyne_gazebo_plugins/share/velodyne_gazebo_plugins/cmake/velodyne_gazebo_pluginsConfig.cmake /home/hjh/ZZU_FLY/devel/share/velodyne_gazebo_plugins/cmake/velodyne_gazebo_pluginsConfig.cmake
+/home/hjh/ZZU_FLY/devel/.private/velodyne_gazebo_plugins/share/velodyne_gazebo_plugins/cmake/velodyne_gazebo_pluginsConfig-version.cmake /home/hjh/ZZU_FLY/devel/share/velodyne_gazebo_plugins/cmake/velodyne_gazebo_pluginsConfig-version.cmake
+/home/hjh/ZZU_FLY/devel/.private/velodyne_gazebo_plugins/lib/libgazebo_ros_velodyne_laser.so /home/hjh/ZZU_FLY/devel/lib/libgazebo_ros_velodyne_laser.so
+/home/hjh/ZZU_FLY/devel/.private/velodyne_gazebo_plugins/lib/libgazebo_ros_velodyne_gpu_laser.so /home/hjh/ZZU_FLY/devel/lib/libgazebo_ros_velodyne_gpu_laser.so
+/home/hjh/ZZU_FLY/devel/.private/velodyne_gazebo_plugins/lib/pkgconfig/velodyne_gazebo_plugins.pc /home/hjh/ZZU_FLY/devel/lib/pkgconfig/velodyne_gazebo_plugins.pc

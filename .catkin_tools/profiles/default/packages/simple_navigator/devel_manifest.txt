@@ -1,0 +1,5 @@
+mix_nav/simple_navigator
+/home/hjh/ZZU_FLY_source/devel/.private/simple_navigator/share/simple_navigator/cmake/simple_navigatorConfig.cmake /home/hjh/ZZU_FLY_source/devel/share/simple_navigator/cmake/simple_navigatorConfig.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/simple_navigator/share/simple_navigator/cmake/simple_navigatorConfig-version.cmake /home/hjh/ZZU_FLY_source/devel/share/simple_navigator/cmake/simple_navigatorConfig-version.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/simple_navigator/lib/simple_navigator/simple_navigator_node /home/hjh/ZZU_FLY_source/devel/lib/simple_navigator/simple_navigator_node
+/home/hjh/ZZU_FLY_source/devel/.private/simple_navigator/lib/pkgconfig/simple_navigator.pc /home/hjh/ZZU_FLY_source/devel/lib/pkgconfig/simple_navigator.pc

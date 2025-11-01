@@ -1,0 +1,5 @@
+pose_init
+/home/hjh/ZZU_FLY_source/devel/.private/pose_init/share/pose_init/cmake/pose_initConfig.cmake /home/hjh/ZZU_FLY_source/devel/share/pose_init/cmake/pose_initConfig.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/pose_init/share/pose_init/cmake/pose_initConfig-version.cmake /home/hjh/ZZU_FLY_source/devel/share/pose_init/cmake/pose_initConfig-version.cmake
+/home/hjh/ZZU_FLY_source/devel/.private/pose_init/lib/pose_init/pose_transformer_node /home/hjh/ZZU_FLY_source/devel/lib/pose_init/pose_transformer_node
+/home/hjh/ZZU_FLY_source/devel/.private/pose_init/lib/pkgconfig/pose_init.pc /home/hjh/ZZU_FLY_source/devel/lib/pkgconfig/pose_init.pc
