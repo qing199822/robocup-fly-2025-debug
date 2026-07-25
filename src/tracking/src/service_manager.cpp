@@ -33,8 +33,8 @@ void ServiceManager::initTargetServices() {
         ros::service::waitForService(rel_name);
 
         // Create clients and store them in the maps
-        request_clients_[tid] = nh_.serviceClient<serve_msg::RequestTarget>(req_name);
-        release_clients_[tid] = nh_.serviceClient<serve_msg::ReleaseTarget>(rel_name);
+        request_clients_[tid] = nh_.serviceClient<look_up::RequestTarget>(req_name);
+        release_clients_[tid] = nh_.serviceClient<look_up::ReleaseTarget>(rel_name);
     }
 
     ROS_INFO("[%s_%s Tracker] All target management services connected.",
@@ -62,7 +62,7 @@ bool ServiceManager::requestTarget(const std::string& target_id) {
         return false;
     }
 
-    serve_msg::RequestTarget srv;
+    look_up::RequestTarget srv;
     srv.request.target_id = target_id;
 
     ros::ServiceClient client = request_clients_[target_id];
@@ -91,7 +91,7 @@ bool ServiceManager::releaseTarget(const std::string& target_id) {
         return false;
     }
 
-    serve_msg::ReleaseTarget srv;
+    look_up::ReleaseTarget srv;
     srv.request.target_id = target_id;
 
     ros::ServiceClient client = release_clients_[target_id];

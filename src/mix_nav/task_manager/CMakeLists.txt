@@ -55,6 +55,10 @@ target_link_libraries(mission_manager_lib
   ${JSONCPP_LIBRARIES}
 )
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_mission_clearance.py)
+endif()
+
 # 注意：我们不再需要之前那个复杂的 install() 部分。
 # catkin_make 或 catkin build 会自动将可执行文件放到 devel/lib/task_manager/ 目录下，
 # 这正是 roslaunch 和 rosrun 需要的地方。

@@ -50,8 +50,8 @@ private:
 
     // ROS 相关的句柄、发布者和订阅者
     ros::NodeHandle nh_;
-    ros::Publisher vision_pose_pub_;
-    ros::Publisher vision_odom_pub_;
+    ros::Publisher global_pose_pub_;
+    ros::Publisher global_odom_pub_;
     ros::Subscriber local_pose_sub_;
     ros::Subscriber local_odom_sub_;
 

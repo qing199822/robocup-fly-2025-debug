@@ -11,15 +11,15 @@ PoseTransformer::PoseTransformer(ros::NodeHandle& nh, const std::string& namespa
     
     // 输入话题：无人机相对于其起飞点的局部位置
     std::string input_pose_topic = "/" + namespace_ + "/mavros/local_position/pose";
-    std::string input_odom_topic = "/" + namespace_ + "/mavros/odometry/in";
+    std::string input_odom_topic = "/" + namespace_ + "/mavros/local_position/odom";
 
     // 输出话题：无人机在全局地图坐标系中的位置
-    std::string output_pose_topic = "/" + namespace_ + "/mavros/vision_pose/pose";
-    std::string output_odom_topic = "/" + namespace_ + "/mavros/vision_odom/odom";
+    std::string output_pose_topic = "/" + namespace_ + "/global_pose";
+    std::string output_odom_topic = "/" + namespace_ + "/global_odom";
 
     // 创建发布者
-    vision_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(output_pose_topic, 10);
-    vision_odom_pub_ = nh_.advertise<nav_msgs::Odometry>(output_odom_topic, 10);
+    global_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(output_pose_topic, 10);
+    global_odom_pub_ = nh_.advertise<nav_msgs::Odometry>(output_odom_topic, 10);
 
     // 创建订阅者
     local_pose_sub_ = nh_.subscribe(input_pose_topic, 10, &PoseTransformer::localPoseCallback, this);
@@ -49,7 +49,7 @@ void PoseTransformer::localPoseCallback(const geometry_msgs::PoseStamped::ConstP
     global_pose_msg.pose.position.z = local_pose_msg->pose.position.z + offset_.z;
 
     // 3. 发布转换后的消息
-    vision_pose_pub_.publish(global_pose_msg);
+    global_pose_pub_.publish(global_pose_msg);
 }
 
 /**
@@ -74,7 +74,7 @@ void PoseTransformer::localOdomCallback(const nav_msgs::Odometry::ConstPtr& loca
     global_odom_msg.pose.pose.position.z = local_odom_msg->pose.pose.position.z + offset_.z;
     
     // 4. 发布转换后的消息
-    vision_odom_pub_.publish(global_odom_msg);
+    global_odom_pub_.publish(global_odom_msg);
 }
 
 int main(int argc, char** argv) {
@@ -84,12 +84,12 @@ int main(int argc, char** argv) {
 
     // 使用 std::map 存储无人机出发点坐标（偏移量）
     std::map<std::string, DroneOffset> drone_offsets = {
-        {"typhoon_h480_zzufly_0", {-17, -3, 0}},
-        {"typhoon_h480_zzufly_1", {-14, -3, 0}},
-        {"typhoon_h480_zzufly_2", {-17,  0, 0}},
-        {"typhoon_h480_zzufly_3", {-14,  0, 0}},
-        {"typhoon_h480_zzufly_4", {-17,  3, 0}},
-        {"typhoon_h480_zzufly_5", {-14,  3, 0}}
+        {"typhoon_h480_0", {-17, -3, 0}},
+        {"typhoon_h480_1", {-14, -3, 0}},
+        {"typhoon_h480_2", {-17,  0, 0}},
+        {"typhoon_h480_3", {-14,  0, 0}},
+        {"typhoon_h480_4", {-17,  3, 0}},
+        {"typhoon_h480_5", {-14,  3, 0}}
     };
 
     // 为字典中的每一架无人机创建一个转换器实例

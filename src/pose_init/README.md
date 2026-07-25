@@ -4,7 +4,7 @@
 
 ```xml
 /mavros/local_position/pose #无人机姿态
-/mavros/odometry/in # 无人机里程计信息
+/mavros/local_position/odom # 无人机里程计信息
 ```
 
 无人机初始在地图坐标系的位置已知的
@@ -12,7 +12,9 @@
 发布的话题是：(相当于位姿真值)
 
 ```xml
-/mavros/vision_pose/pose
-/mavros/vision_odom/odom
+/global_pose
+/global_odom
 ```
 
+这些项目内部话题不能使用 `/mavros/vision_*` 名称；后者是 MAVROS
+发送给飞控的外部视觉输入，使用它们会把转换后的坐标反馈进 PX4 状态估计器。

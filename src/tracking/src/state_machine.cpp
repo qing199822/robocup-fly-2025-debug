@@ -31,9 +31,11 @@ TrackingStateMachine::TrackingStateMachine(ros::NodeHandle& nh,
     nh_.param("state_machine/lost_buffer_frames", LOST_BUFFER_FRAMES_, 5);
 
     // Initialize Publishers
-    std::string ns = "/xtdrone/" + vehicle_type_ + "_" + vehicle_id_;
-    cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(ns + "/cmd_vel_flu", 1);
-    cmd_pub_ = nh_.advertise<std_msgs::String>(ns + "/cmd", 1);
+    std::string xtdrone_namespace = "/xtdrone/" + vehicle_type_ + "_" + vehicle_id_;
+    std::string external_command_topic = "/" + vehicle_type_ + "_" + vehicle_id_ +
+                                         "/mux_inputs/external/pose_cmd";
+    cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(external_command_topic, 1);
+    cmd_pub_ = nh_.advertise<std_msgs::String>(xtdrone_namespace + "/cmd", 1);
     mission_control_pub_ = nh_.advertise<std_msgs::String>("/" + vehicle_type_ + "_" + vehicle_id_ + "/mission/control", 1);
     
     // 新增：追踪状态发布器，话题名与节点名相同

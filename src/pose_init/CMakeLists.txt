@@ -32,3 +32,8 @@ add_executable(pose_transformer_node src/pose_init.cpp)
 target_link_libraries(pose_transformer_node
   ${catkin_LIBRARIES}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest(test/pose_namespace.test)
+endif()

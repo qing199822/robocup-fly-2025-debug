@@ -47,6 +47,11 @@ target_link_libraries(simple_navigator_node
   ${catkin_LIBRARIES}
 )
 
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest(test/velocity_continuity.test)
+endif()
+
 #===========================================================================
 # 安装规则 (可选，但推荐)
 #===========================================================================

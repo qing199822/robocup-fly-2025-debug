@@ -8,8 +8,8 @@
 
 // Include the required service definition headers
 #include "topic_tools/MuxSelect.h"
-#include "serve_msg/RequestTarget.h"
-#include "serve_msg/ReleaseTarget.h"
+#include "look_up/RequestTarget.h"
+#include "look_up/ReleaseTarget.h"
 
 /**
  * @class ServiceManager

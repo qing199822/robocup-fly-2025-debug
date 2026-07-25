@@ -3,20 +3,23 @@
 
 // Constructor implementation
 SimpleNavigator::SimpleNavigator(ros::NodeHandle& nh, const std::string& vehicle_id)
-    : nh_(nh), vehicle_id_(vehicle_id), current_state_(State::IDLE), has_pose_(false) {
+    : nh_(nh), vehicle_id_(vehicle_id), current_state_(State::IDLE), has_pose_(false),
+      current_forward_speed_(0.0) {
     
     // Initialize parameters from the parameter server or use default values
     nh_.param("Kp_linear", Kp_linear_, 0.6);
     nh_.param("Kp_z", Kp_z_, 1.0);
     nh_.param("Kp_yaw", Kp_yaw_, 1.2);
     nh_.param("MAX_SPEED_X", MAX_SPEED_X_, 6.0);
+    nh_.param("MAX_ACCEL_X", MAX_ACCEL_X_, 2.0);
+    nh_.param("MAX_DECEL_X", MAX_DECEL_X_, 12.0);
     nh_.param("MAX_SPEED_Z", MAX_SPEED_Z_, 1.5);
     nh_.param("MAX_SPEED_YAW", MAX_SPEED_YAW_, 1.5);
     nh_.param("ARRIVAL_TOLERANCE", ARRIVAL_TOLERANCE_, 2.0);
     nh_.param("YAW_ALIGN_THRESHOLD", YAW_ALIGN_THRESHOLD_, M_PI / 6.0); // 30 degrees in radians
 
     // Setup subscribers and publishers
-    pose_sub_ = nh_.subscribe("/" + vehicle_id_ + "/mavros/vision_pose/pose", 10, &SimpleNavigator::poseCallback, this);
+    pose_sub_ = nh_.subscribe("/" + vehicle_id_ + "/global_pose", 10, &SimpleNavigator::poseCallback, this);
     goal_sub_ = nh_.subscribe("/" + vehicle_id_ + "/move_base_simple/goal", 10, &SimpleNavigator::goalCallback, this);
     cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/" + vehicle_id_ + "/mux_inputs/navigator/cmd_vel", 10);
 
@@ -46,6 +49,22 @@ std::string SimpleNavigator::stateToString(State state) {
     return "NAVIGATING";
 }
 
+double SimpleNavigator::limitForwardSpeedChange(double desired_speed) {
+    const double max_acceleration_step = std::max(0.0, MAX_ACCEL_X_) / 20.0;
+    const double max_deceleration_step = std::max(0.0, MAX_DECEL_X_) / 20.0;
+    const double speed_error = desired_speed - current_forward_speed_;
+
+    if (speed_error > max_acceleration_step) {
+        current_forward_speed_ += max_acceleration_step;
+    } else if (speed_error < -max_deceleration_step) {
+        current_forward_speed_ -= max_deceleration_step;
+    } else {
+        current_forward_speed_ = desired_speed;
+    }
+
+    return current_forward_speed_;
+}
+
 // Main logic loop
 void SimpleNavigator::run() {
     ros::Rate rate(20.0);
@@ -56,8 +75,8 @@ void SimpleNavigator::run() {
             ROS_INFO_THROTTLE(2, "[%s_nav] Waiting for drone's pose information...", vehicle_id_.c_str());
         } else {
             if (current_state_ == State::IDLE) {
-                // Publish zero velocities to hover
-                twist_cmd.linear.x = 0;
+                // Decelerate smoothly before settling into a hover.
+                twist_cmd.linear.x = limitForwardSpeedChange(0.0);
                 twist_cmd.linear.y = 0;
                 twist_cmd.linear.z = 0;
                 twist_cmd.angular.x = 0;
@@ -97,17 +116,20 @@ void SimpleNavigator::run() {
                 if (yaw_error < -M_PI) yaw_error += 2 * M_PI;
 
                 // P-controller for velocities
-                double vel_x = 0.0, vel_z = 0.0, vel_yaw = 0.0;
+                double desired_vel_x = 0.0, vel_z = 0.0, vel_yaw = 0.0;
                 vel_yaw = Kp_yaw_ * yaw_error;
 
-                if (std::abs(yaw_error) < YAW_ALIGN_THRESHOLD_) {
+                if (YAW_ALIGN_THRESHOLD_ > 0.0) {
                     double horizontal_distance = std::sqrt(pos_err_x * pos_err_x + pos_err_y * pos_err_y);
-                    vel_x = Kp_linear_ * horizontal_distance;
+                    double yaw_alignment = std::max(0.0, 1.0 - std::abs(yaw_error) / YAW_ALIGN_THRESHOLD_);
+                    double aligned_speed = std::max(0.0, std::min(MAX_SPEED_X_, Kp_linear_ * horizontal_distance));
+                    desired_vel_x = aligned_speed * yaw_alignment;
                 }
                 vel_z = Kp_z_ * pos_err_z;
                 
                 // Apply speed limits
-                twist_cmd.linear.x = std::max(-MAX_SPEED_X_, std::min(MAX_SPEED_X_, vel_x));
+                desired_vel_x = std::max(0.0, std::min(MAX_SPEED_X_, desired_vel_x));
+                twist_cmd.linear.x = limitForwardSpeedChange(desired_vel_x);
                 twist_cmd.linear.z = std::max(-MAX_SPEED_Z_, std::min(MAX_SPEED_Z_, vel_z));
                 twist_cmd.angular.z = std::max(-MAX_SPEED_YAW_, std::min(MAX_SPEED_YAW_, vel_yaw));
 

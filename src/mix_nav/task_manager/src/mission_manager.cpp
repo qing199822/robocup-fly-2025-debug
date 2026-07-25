@@ -10,9 +10,9 @@ MissionManager::MissionManager(const std::string& vehicle_id, const std::vector<
 
     // 初始化發布者和訂閱者
     std::string goal_topic = "/" + vehicle_id_ + "/move_base_simple/goal";
-    std::string pose_topic = "/" + vehicle_id_ + "/mavros/vision_pose/pose";
+    std::string pose_topic = "/" + vehicle_id_ + "/global_pose";
     std::string control_topic = "/" + vehicle_id_ + "/mission/control";
-    std::string odom_topic = "/" + vehicle_id_ + "/mavros/vision_odom/odom";
+    std::string odom_topic = "/" + vehicle_id_ + "/global_odom";
 
     goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(goal_topic, 1);
     pose_sub_ = nh_.subscribe(pose_topic, 1, &MissionManager::pose_callback, this);

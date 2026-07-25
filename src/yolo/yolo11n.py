@@ -7,6 +7,7 @@ from sensor_msgs.msg import Image                   # ROS 图像消息类型
 from cv_bridge import CvBridge                     # OpenCV <=> ROS 图像转换桥
 from darknet_ros_msgs.msg import BoundingBoxes, BoundingBox  # 自定义目标检测消息类型
 import sys 
+from pathlib import Path
 
 # 图像与AI库
 import cv2
@@ -28,7 +29,7 @@ else:
 
 
 
-model = YOLO('yolo11n_942.pt')  # 请确保路径正确，文件存在
+model = YOLO(str(Path(__file__).with_name('yolo11n_942.pt')))
 model.to(device)  # 强制模型使用GPU或CPU
 
 # 设置最小置信度阈值（低于此数值的检测框将被过滤掉）

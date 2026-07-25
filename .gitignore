@@ -1,0 +1,36 @@
+# Catkin build output
+/build/
+/devel/
+/build.*/
+/devel.*/
+/build.from-abab/
+/devel.from-abab/
+/install/
+/log/
+/logs/
+/Testing/
+/.catkin_tools/
+/.catkin_workspace
+/src/CMakeLists.txt
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# ROS/Gazebo runtime output
+*.bag
+*.bag.active
+*.log
+*.ulg
+*.tlog
+
+# Local editor and operating-system files
+*.swp
+*.swo
+.DS_Store
+
+# Local-only helper and editor configuration
+/save.sh
+/.vscode/

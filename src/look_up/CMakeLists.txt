@@ -26,12 +26,11 @@ generate_messages(
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES ${PROJECT_NAME}
-  CATKIN_DEPENDS 
-    roscpp 
-    rospy 
-    std_msgs 
-    geometry_msgs 
+  CATKIN_DEPENDS
+    roscpp
+    rospy
+    std_msgs
+    geometry_msgs
     message_runtime
 )
 

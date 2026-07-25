@@ -1,97 +1,114 @@
-# 2025 中国机器人大赛多旋翼无人机集群搜索仿真——ZZU_FLY代码文档
+# 2025 RoboCup 多旋翼无人机集群协同搜索仿真
 
-## 1.项目结构
+这是 2025 中国机器人大赛无人机挑战赛“多旋翼无人机集群协同搜索仿真”项目的调试版本。仓库包含六架 Typhoon H480 的 ROS 节点、Gazebo 插件、自定义模型、定点巡航任务、YOLO 检测、坐标解算、目标跟踪和一键启动脚本。
 
-```txt
-ZZU_FLY
-	|____src
-			|_______gazebo相关插件，非算法核心部分
-			|_______gimbal # 云台控制
-            |_______look_up # 目标管理模块
-            |_______mix_nav
-            			   |_______fly # 起飞模块
-            			   |_______simple_navigator #导航模块
-            			   |_______task_manager # 发布目标点
-            |_______pose_init # 输出map坐标系下无人机的实时位姿
-            |_______tracking # 目标跟踪模块
-            |_______transform_tree # 自定义tf广播模块
-            |_______yolo # 目标识别及解算模块
-    |_______waypoint # 地图可视画工具，可以用于快速浏览地图和设置路径点
-    Others(launch文件与无人机sdf)
-        |_______robocup_zzufly.launch
-        |_______typhoon_h480_zzufly
+当前目标是让更多开发者能在相同版本组合上复现问题并共同调试。请先严格使用下列版本，尤其不要把 PX4 换成 1.13。
+
+## 当前调试状态
+
+截至 2026-07-25，六个 PX4/MAVROS 实例可以连接，六路 RGB 与六路深度图像均能持续发布。跟踪节点已改为通过 `topic_tools` MUX 的外部输入发布控制命令，避免与 MUX 同时向最终 XTDrone 速度话题写入。
+
+当前版本仍是调试快照，不是稳定比赛版本。六机 `mission_down.json` 联调中仍可复现 3 号机失稳并坠落；一次记录中它在侧翻后从约 1.15 米跌到 0.78 米，其他五架继续运行。复现与采集建议见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。欢迎优先协助检查 3 号机初始姿态、碰撞状态、任务切换及 MUX 控制时序。
+
+## 已验证环境
+
+- Ubuntu 20.04.6 LTS
+- ROS Noetic 1.5.0
+- Gazebo 11.15.1
+- PX4 `v1.11.0-beta1`
+- MAVROS 1.20.1
+- Python 3.8.10
+- NVIDIA 535.230.02，RTX 3060 12GB
+- PyTorch 2.1.2 + CUDA 12.1 wheel
+- Ultralytics 8.3.40
+
+完整安装和目录说明见 [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)，常见故障见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
+
+## 仓库内容
+
+```text
+2025_ZZU_FLY/
+|-- 1.sh                         # 六机一键启动和进程清理
+|-- robocup_zzufly.launch        # Gazebo、PX4 SITL、MAVROS 六机启动
+|-- typhoon_h480_zzufly/         # 自定义无人机模型和相机
+|-- src/
+|   |-- gimbal/                  # 六机云台控制
+|   |-- look_up/                 # 目标占用管理和任务组合 launch
+|   |-- mix_nav/                 # 起飞、导航、任务管理
+|   |-- pose_init/               # 本地坐标转全局地图坐标
+|   |-- tracking/                # 目标跟踪状态机和控制器
+|   |-- transform_tree/          # TF 广播
+|   |-- yolo/                    # YOLO 检测和深度坐标解算
+|   `-- gazebo_ros_pkgs/         # 与本项目共同构建的 Gazebo ROS 插件
+|-- tests/                       # 启动脚本和图形环境回归测试
+`-- waypoint/                    # 地图浏览和航点辅助工具
 ```
 
+PX4、XTDrone、Gazebo 模型库和 Python 虚拟环境不在本仓库中，默认与本项目放在同一个父目录。这样可以避免上传约 1.2GB 的 PX4 环境和本机编译结果。
 
+## 快速开始
 
-## 2. 核心思路
+先完成 [环境安装](docs/ENVIRONMENT.md)，并确认目录如下：
 
-比赛中一共有17张地图，并且完全开源，每个队伍每次尝试都会从这17张地图中随机抽取一张进行搜索；我们观察发现按照中间主干道道路位置不同，地图可以归纳成三类：
+```text
+robocup_fly/
+|-- 2025_ZZU_FLY/
+|-- PX4_Firmware/
+|-- XTDrone/
+|-- gazebo_models/
+|-- .venv-yolo/
+`-- .xtdrone-python/
+```
 
-主干道居中（middle）:![base0](waypoint/world.png/base0.png)
-
-主干道偏上(up):
-
-![base5](waypoint/world.png/base5.png)
-
-主干道偏下（down):
-
-![base7](waypoint/world.png/base7.png)
-
-实力有限，我们没有开发 （~~抄开源~~） 出像样的自主探索算法，由于目标理论上不会进入房屋，且地图相对固定，因此采用定点巡航模式沿大路进行搜寻。
-
-首先，用veiw.py设置好每类地图的路径点，输出为mission_up/middle/down/bp.json文件，并放入task_manager的launch文件夹下，
-
-使用fly模块起飞后，会自动将控制权交给导航模块，同时yolo识别模块开始工作，当发现目标时，跟踪模块会向总控请求控制权，同时导航进入中断模式，记录断点坐标；当目标消除后，追踪模块将控制权重新交回，继续巡航… 以此类推，最终完成所有任务。
-
-## 3. 运行和使用
-
-### （1）编译：
-
-本项目结构较为简单，应该没有用到什么抽象的包，因此
+构建项目：
 
 ```bash
-cd ~/ZZU_FLY
-rm -rf devel builds logs
-catkin build
+cd ~/robocup_fly/2025_ZZU_FLY
+source /opt/ros/noetic/setup.bash
+catkin_init_workspace src
+catkin_make -DCMAKE_BUILD_TYPE=Release
 ```
 
-即可顺利完成编译
-
-**值得一提的是gazebo_ros_actor_plugin，是行人运动插件，gazebo_ros_pkgs是执行xtdrone 一键安装脚本安装好的，如果自己运行算法+仿真的话，不建议删除**
-
-### （2）使用:
-
-*根目录下的所有一键启动脚本都是为docker中的tmux设计的，本地运行需要转换才能使用*
-
-为了应对不同情况，我们设置了四个启动脚本，每个脚本仅有
+启动六机 `down` 地图任务：
 
 ```bash
-echo "定点巡航"
-run_in_new_pane "flight_points" "source $HOME/ZZU_FLY/devel/setup.bash && roslaunch task_manager task.launch num_drones:=6 mission_filename:=mission_down.json"
-sleep 2
+cd ~/robocup_fly/2025_ZZU_FLY
+bash 1.sh 6 mission_down.json
 ```
 
-这里的任务json文件不同
+启动脚本会依次检查并启动 Gazebo、六个 PX4 SITL、六个 MAVROS、XTDrone 通信、云台、YOLO、坐标解算、跟踪和任务节点。退出时在启动终端按 `Ctrl-C`，脚本会清理其创建的所有进程。
 
-其中`1.sh`对应的json是mission_down
+## 运行检查
 
-`2.sh` 对应的json是mission_middle
-
-`3.sh `对应的json是mission_up
-
-`bp.sh` 对应的json是mission_bp，(即backup方案，在该方案下，无人机仅会搜索地图边缘确定的大路以及生成时所在的那条路，不会搜索中间主干道，适配所有地图，但是效率比较低下，为极端条件设计，基本不会用到)
-
-eg:   运行
+静态和脚本测试：
 
 ```bash
-bash 1.sh
+cd ~/robocup_fly/2025_ZZU_FLY
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 src/mix_nav/fly/test/test_fly_launch.py
+python3 src/mix_nav/task_manager/test/test_mission_clearance.py
+rostest simple_navigator velocity_continuity.test
+rostest pose_init pose_namespace.test
 ```
 
-即可坐在一边，观看无人机勤劳地完成任务了！！！
+六机运行后，至少应出现六个 MAVROS、六个通信节点、六个 YOLO 节点和 12 路 RGB/深度图像话题。详细检查命令和已知限制见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
-## 4. 写在最后
+## 设计概述
 
-这次项目，让我从一个ros小白成功进化成一个入门级玩家，对工程开发有了更深的理解，感谢崔龙飞学长，没有他总体部署和解决“卡脖子”问题，这套代码不可能走到最后，感谢冯一博同学，他解决了docker环境问题，正是有了docker,我们的代码才能无报错的完成30min的精彩表演，最后感谢Gemini, deepseek, 豆包，它们为我提供思路，答疑解惑，是真正的良师益友。
+比赛地图按主干道位置分为 `up`、`middle` 和 `down` 三类。任务管理器发布预设航点，导航器控制巡航；识别到目标后，跟踪节点通过 MUX 接管控制，目标丢失后再交还任务管理器继续航线。
 
-希望这个项目成为一个留念，支撑我向更大的挑战冲击！
+本调试分支重点处理：
+
+- Gazebo 图形会话缺失导致六路深度相机不发布图像。
+- 六机启动顺序、MAVROS 就绪等待和退出清理。
+- 航向对准时的速度连续性和紧急制动。
+- 低于 6 米的任务航线及建筑、路灯碰撞余量。
+- ROS Noetic 下重复消息包和命名空间冲突。
+
+## 参与调试
+
+请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交问题时附上环境版本、启动命令、首次错误日志，以及受影响的无人机编号和仿真时间。不要提交 `build/`、`devel/`、ROS 日志、PX4 固件包或 Python 虚拟环境。
+
+本仓库包含来自多个上游项目的代码和资源，各目录继续遵循其原有许可。没有明确许可的比赛代码不得被推定为采用某个新的统一许可证。

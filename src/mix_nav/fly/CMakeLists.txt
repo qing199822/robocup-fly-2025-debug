@@ -43,6 +43,10 @@ add_dependencies(fly_takeoff
   ${catkin_EXPORTED_TARGETS}
 )
 
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_fly_launch.py)
+endif()
+
 # 安装目标
 install(TARGETS fly_takeoff
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

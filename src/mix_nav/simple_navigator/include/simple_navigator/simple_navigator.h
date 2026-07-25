@@ -29,6 +29,7 @@ private:
 
     // Helper function to get a string representation of the current state
     std::string stateToString(State state);
+    double limitForwardSpeedChange(double desired_speed);
 
     // ROS specific members
     ros::NodeHandle nh_;
@@ -49,8 +50,11 @@ private:
 
     // Speed limits
     double MAX_SPEED_X_;
+    double MAX_ACCEL_X_;
+    double MAX_DECEL_X_;
     double MAX_SPEED_Z_;
     double MAX_SPEED_YAW_;
+    double current_forward_speed_;
 
     // Other parameters
     double ARRIVAL_TOLERANCE_;

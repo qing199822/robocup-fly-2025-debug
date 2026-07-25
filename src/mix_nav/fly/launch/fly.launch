@@ -16,7 +16,6 @@
           pkg="fly" 
           type="fly_takeoff" 
           output="$(arg output)"
-          required="true"
           args="$(arg drone_name) $(arg drone_quantity) $(arg target_altitude)" />
           
 </launch>

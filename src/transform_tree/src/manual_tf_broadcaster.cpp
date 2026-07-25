@@ -5,14 +5,14 @@ ManualTfBroadcaster::ManualTfBroadcaster(ros::NodeHandle& nh, const std::string&
 {
     // 构造发布和订阅的话题名称
     std::string tf_topic_name = "/" + robot_namespace_ + "/tf";
-    std::string odom_topic_name = "/" + robot_namespace_ + "/mavros/vision_odom/odom";
+    std::string odom_topic_name = "/" + robot_namespace_ + "/global_odom";
 
     // 初始化发布者
     // 发布到以命名空间为前缀的 /tf 话题，消息类型为 tf2_msgs::TFMessage
     tf_pub_ = nh_.advertise<tf2_msgs::TFMessage>(tf_topic_name, 1);
 
     // 初始化订阅者
-    // 订阅以命名空间为前缀的 /mavros/vision_odom/odom 话题
+    // 订阅以命名空间为前缀的全局里程计话题
     odom_sub_ = nh_.subscribe(odom_topic_name, 1, &ManualTfBroadcaster::odomCallback, this);
 
     ROS_INFO("Manual TF Broadcaster for namespace [%s] initialized.", robot_namespace_.c_str());

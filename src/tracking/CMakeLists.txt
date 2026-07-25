@@ -15,7 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   darknet_ros_msgs
   topic_tools
-  serve_msg
+  look_up
 )
 
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
@@ -23,7 +23,7 @@ find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 # ========================= 2. Catkin包配置 =========================
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp std_msgs geometry_msgs darknet_ros_msgs topic_tools serve_msg
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs darknet_ros_msgs topic_tools look_up
   DEPENDS Eigen3
 )
 
@@ -47,6 +47,8 @@ add_executable(tracking_node
   src/service_manager.cpp
   src/smoothing.cpp
 )
+
+add_dependencies(tracking_node ${catkin_EXPORTED_TARGETS})
 
 # ========================= 5. 链接库 =========================
 # 【修正】: 将 Eigen3::Eigen 添加到 target_link_libraries
