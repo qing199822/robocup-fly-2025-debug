@@ -95,9 +95,12 @@ void ConfidentTakeoff::run() {
             break;
         }
         
-        // 发布速度指令
-        for (auto& pub : vel_pubs_) {
-            pub.publish(climb_twist);
+        // Stop each aircraft independently instead of making early arrivals
+        // keep climbing while the slowest aircraft catches up.
+        for (int i = 0; i < drone_quantity_; ++i) {
+            if (!mission_done_flags_[i]) {
+                vel_pubs_[i].publish(climb_twist);
+            }
         }
         
         // 检查高度并更新状态

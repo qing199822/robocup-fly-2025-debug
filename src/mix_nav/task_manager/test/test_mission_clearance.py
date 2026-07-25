@@ -6,10 +6,13 @@ from pathlib import Path
 
 
 MISSION_FILE = Path(__file__).resolve().parents[1] / "launch" / "mission_down.json"
+MISSION_FILES = sorted(MISSION_FILE.parent.glob("mission_*.json"))
 HORIZONTAL_CLEARANCE = 2.0
+MAX_FLIGHT_ALTITUDE = 6.0
 
 # Bounds are calculated from the collision meshes and transforms in robocup.world.
 STATIC_OBSTACLES = (
+    ("gas_station_73", 51.59, 72.17, -36.63, -6.64, 8.98),
     ("fast_food_93", 14.12, 39.29, -22.22, -5.64, 11.02),
     ("house_2_125", -5.96, 6.77, -19.82, -10.03, 7.20),
     ("house_3_156", -35.78, -30.98, -25.68, -13.03, 10.62),
@@ -57,6 +60,21 @@ def segment_intersects_box(start, end, x_min, x_max, y_min, y_max):
 
 
 class MissionClearanceTest(unittest.TestCase):
+    def test_all_mission_waypoints_are_strictly_below_six_metres(self):
+        violations = []
+        for mission_file in MISSION_FILES:
+            with mission_file.open(encoding="utf-8") as mission_stream:
+                missions = json.load(mission_stream)
+            for mission in missions:
+                for index, waypoint in enumerate(mission["waypoints"], start=1):
+                    if waypoint["z"] >= MAX_FLIGHT_ALTITUDE:
+                        violations.append(
+                            f"{mission_file.name}: {mission['vehicle_id']} waypoint "
+                            f"{index} has z={waypoint['z']}"
+                        )
+
+        self.assertEqual([], violations, "\n" + "\n".join(violations))
+
     def test_flight_segments_clear_known_static_buildings(self):
         with MISSION_FILE.open(encoding="utf-8") as mission_stream:
             missions = json.load(mission_stream)

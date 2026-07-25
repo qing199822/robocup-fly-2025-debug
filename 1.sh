@@ -18,12 +18,13 @@ PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
 SIMULATION_LAUNCH="$WORKSPACE_DIR/robocup_zzufly.launch"
 XTDRONE_PYTHON="${XTDRONE_PYTHON:-/usr/bin/python3}"
 XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"
-READY_TIMEOUT_SECONDS=90
+READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
 COMMUNICATION_TIMEOUT_SECONDS=20
 
 NUM_DRONES=${1:-6}
 MISSION_FILE=${2:-mission_down.json}
 SIMULATION_PID=""
+MISSION_PID=""
 HELPER_PIDS=()
 CLEANUP_DONE=false
 
@@ -36,21 +37,25 @@ cleanup() {
     echo
     echo "正在停止本脚本启动的节点..."
 
+    if [ -n "$MISSION_PID" ] && kill -0 "$MISSION_PID" 2>/dev/null; then
+        kill -TERM "$MISSION_PID" 2>/dev/null || true
+    fi
+
     for pid in "${HELPER_PIDS[@]}"; do
         # Helper scripts spawn several Python processes then exit. They remain
         # in the setsid-created process group whose ID is the saved PID.
-        kill -INT -- "-$pid" 2>/dev/null || true
+        kill -TERM -- "-$pid" 2>/dev/null || true
     done
 
     if [ -n "$SIMULATION_PID" ] && kill -0 "$SIMULATION_PID" 2>/dev/null; then
-        kill -INT "$SIMULATION_PID" 2>/dev/null || true
+        kill -TERM "$SIMULATION_PID" 2>/dev/null || true
     fi
 
     if [ "${MODEL_LINK_CREATED:-false}" = true ]; then
         rm -f "$MODEL_LINK"
     fi
 
-    for pid in "${HELPER_PIDS[@]}" "$SIMULATION_PID"; do
+    for pid in "$MISSION_PID" "${HELPER_PIDS[@]}" "$SIMULATION_PID"; do
         if [ -n "$pid" ]; then
             wait "$pid" 2>/dev/null || true
         fi
@@ -262,4 +267,6 @@ start_helper "$WORKSPACE_DIR/src/yolo" "multi_yolo_detecting.sh" "YOLO 检测"
 start_helper "$WORKSPACE_DIR/src/yolo" "multi_solving.sh" "坐标计算"
 
 echo "启动 down_resume 任务节点..."
-roslaunch look_up down_resume.launch num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE"
+roslaunch look_up down_resume.launch num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE" &
+MISSION_PID=$!
+wait "$MISSION_PID"

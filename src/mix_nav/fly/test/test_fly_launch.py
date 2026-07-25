@@ -18,6 +18,16 @@ class FlyLaunchTest(unittest.TestCase):
             "a normally completed takeoff node must not stop the entire mission launch",
         )
 
+    def test_completed_aircraft_do_not_receive_more_climb_commands(self):
+        source_file = pathlib.Path(__file__).parents[1] / "src" / "fly_takeoff.cpp"
+        compacted_source = "".join(source_file.read_text().split())
+
+        self.assertIn(
+            "if(!mission_done_flags_[i]){vel_pubs_[i].publish(climb_twist);}",
+            compacted_source,
+            "each aircraft must stop climbing as soon as it reaches target altitude",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
