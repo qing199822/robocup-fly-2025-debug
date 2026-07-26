@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>competition_compliance</name>
+  <version>0.1.0</version>
+  <description>Competition-safe model generation and environment verification.</description>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
+  <license>LicenseRef-Team-Code</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <depend>tf</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <test_depend>python3-nose</test_depend>
+  <test_depend>python3-numpy</test_depend>
+</package>
