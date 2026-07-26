@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
+import os
 import pathlib
+import shlex
+import shutil
+import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -11,9 +16,27 @@ SINGLE_LAUNCH = (
     WORKSPACE
     / "src/competition_compliance/launch/single_vehicle_spawn_clean.launch"
 )
+PACKAGE_XML = WORKSPACE / "src/competition_compliance/package.xml"
 CLEAN_INCLUDE = (
     "$(find competition_compliance)/launch/"
     "single_vehicle_spawn_clean.launch"
+)
+
+
+def _default_xtdrone_dir():
+    for directory in (WORKSPACE, *WORKSPACE.parents):
+        candidate = directory / "XTDrone"
+        if candidate.is_dir():
+            return candidate
+    return WORKSPACE.parent / "XTDrone"
+
+
+XTDRONE_DIR = pathlib.Path(
+    os.environ.get("XTDRONE_DIR", str(_default_xtdrone_dir()))
+)
+OFFICIAL_REALSENSE_SDF = (
+    XTDRONE_DIR
+    / "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf"
 )
 
 
@@ -31,6 +54,15 @@ def args_by_name(parent):
         arg.attrib["name"]: arg.attrib.get("value", arg.attrib.get("default"))
         for arg in parent.findall("arg")
     }
+
+
+def semantic_element(element):
+    return (
+        element.tag,
+        tuple(sorted(element.attrib.items())),
+        (element.text or "").strip(),
+        tuple(semantic_element(child) for child in element),
+    )
 
 
 class MultiVehicleLaunchContractTest(unittest.TestCase):
@@ -144,7 +176,15 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
             with self.subTest(arg=name):
                 self.assertEqual(default, required_arg(self.root, name).attrib.get("default"))
 
-    def test_model_description_reads_only_explicit_file_and_updates_ports(self):
+    def model_description_argv(self, sdf_file, tcp_port="4999", gimbal_port="13999"):
+        model_description = self.root.find("./param[@name='model_description']")
+        command = model_description.attrib["command"]
+        command = command.replace("$(arg mavlink_tcp_port)", tcp_port)
+        command = command.replace("$(arg udp_gimbal_port)", gimbal_port)
+        command = command.replace("$(arg sdf_file)", str(sdf_file))
+        return shlex.split(command)
+
+    def test_model_description_preserves_official_runtime_port_substitutions(self):
         model_description = self.root.find("./param[@name='model_description']")
         self.assertIsNotNone(model_description)
         command = " ".join(model_description.attrib["command"].split())
@@ -165,7 +205,50 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
             command,
         )
         self.assertEqual(1, command.count("$(arg sdf_file)"))
-        self.assertTrue(command.endswith("$(arg sdf_file)"))
+        self.assertTrue(command.endswith('"$(arg sdf_file)"'))
+
+    def test_transform_accepts_whitespace_path_and_changes_only_tcp_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_directory = pathlib.Path(directory) / "model inputs"
+            model_directory.mkdir()
+            model_file = model_directory / "vehicle copy.sdf"
+            shutil.copyfile(str(OFFICIAL_REALSENSE_SDF), str(model_file))
+
+            argv = self.model_description_argv(model_file)
+            self.assertEqual(str(model_file), argv[-1])
+            completed = subprocess.run(
+                argv,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+            )
+
+            before = ET.parse(str(model_file)).getroot()
+            after = ET.fromstring(completed.stdout)
+            before_tcp = before.findall(
+                ".//plugin[@name='mavlink_interface']/mavlink_tcp_port"
+            )
+            after_tcp = after.findall(
+                ".//plugin[@name='mavlink_interface']/mavlink_tcp_port"
+            )
+            self.assertEqual(["4560"], [(node.text or "").strip() for node in before_tcp])
+            self.assertEqual(["4999"], [(node.text or "").strip() for node in after_tcp])
+
+            # Preserve launcher parity; the clean sensor model has no gimbal field to edit.
+            self.assertEqual(
+                [],
+                before.findall(".//udp_gimbal_port_remote"),
+            )
+            self.assertEqual(
+                [],
+                after.findall(".//udp_gimbal_port_remote"),
+            )
+
+            before.find(".//plugin[@name='mavlink_interface']").remove(before_tcp[0])
+            after.find(".//plugin[@name='mavlink_interface']").remove(after_tcp[0])
+            self.assertEqual(semantic_element(before), semantic_element(after))
 
     def test_never_reads_or_writes_official_model_directories(self):
         self.assertNotIn("Tools/sitl_gazebo/models", self.text)
@@ -204,6 +287,19 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
             "-sdf -param model_description -model $(arg vehicle)_$(arg ID_in_group) "
             "-x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)",
             " ".join(node.attrib["args"].split()),
+        )
+
+
+class PackageMetadataContractTest(unittest.TestCase):
+    def test_declares_installed_launch_runtime_dependencies(self):
+        root = ET.parse(str(PACKAGE_XML)).getroot()
+        dependencies = {
+            element.text.strip()
+            for element in root.findall("./exec_depend")
+            if element.text
+        }
+        self.assertTrue(
+            {"roslaunch", "gazebo_ros", "px4", "xmlstarlet"}.issubset(dependencies)
         )
 
 

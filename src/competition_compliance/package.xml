@@ -10,6 +10,10 @@
   <depend>rospy</depend>
   <depend>tf</depend>
   <depend>tf2_ros</depend>
+  <exec_depend>roslaunch</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>px4</exec_depend>
+  <exec_depend>xmlstarlet</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <test_depend>python3-nose</test_depend>
   <test_depend>python3-numpy</test_depend>

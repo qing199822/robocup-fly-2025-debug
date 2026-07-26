@@ -24,7 +24,7 @@
     <arg name="interactive" default="true"/>
 
     <!-- Generate the runtime model from the caller-owned temporary SDF. -->
-    <param name="model_description" command="xmlstarlet ed -d '//plugin[@name=&quot;mavlink_interface&quot;]/mavlink_tcp_port' -s '//plugin[@name=&quot;mavlink_interface&quot;]' -t elem -n mavlink_tcp_port -v $(arg mavlink_tcp_port) -u '//plugin[@name=&quot;gimbal_controller&quot;]/udp_gimbal_port_remote' -v $(arg udp_gimbal_port) $(arg sdf_file)"/>
+    <param name="model_description" command="xmlstarlet ed -d '//plugin[@name=&quot;mavlink_interface&quot;]/mavlink_tcp_port' -s '//plugin[@name=&quot;mavlink_interface&quot;]' -t elem -n mavlink_tcp_port -v $(arg mavlink_tcp_port) -u '//plugin[@name=&quot;gimbal_controller&quot;]/udp_gimbal_port_remote' -v $(arg udp_gimbal_port) &quot;$(arg sdf_file)&quot;"/>
 
     <!-- PX4 SITL -->
     <arg unless="$(arg interactive)" name="px4_command_arg1" value=""/>
