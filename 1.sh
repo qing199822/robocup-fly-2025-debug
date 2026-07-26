@@ -18,8 +18,22 @@ PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
 SIMULATION_LAUNCH="$WORKSPACE_DIR/robocup_zzufly.launch"
 XTDRONE_PYTHON="${XTDRONE_PYTHON:-/usr/bin/python3}"
 XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"
+COMPLIANCE_PACKAGE_DIR="$WORKSPACE_DIR/src/competition_compliance"
+COMPLIANCE_PYTHON="${COMPLIANCE_PYTHON:-/usr/bin/python3}"
+PREPARE_MODEL="$COMPLIANCE_PACKAGE_DIR/scripts/prepare_model.py"
+OFFICIAL_MANIFEST="$COMPLIANCE_PACKAGE_DIR/config/official_manifest.json"
+SENSOR_MOUNT_CONFIG="$COMPLIANCE_PACKAGE_DIR/config/sensor_mount.yaml"
+RUN_TMP_DIR=""
+GENERATED_MODEL=""
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
 COMMUNICATION_TIMEOUT_SECONDS=20
+CAMERA_TIMEOUT_SECONDS="${CAMERA_TIMEOUT_SECONDS:-60}"
+LOG_DIR="$WORKSPACE_DIR/logs/competition-clean"
+RUN_LOG="$LOG_DIR/launch-$(date +%Y%m%d-%H%M%S).log"
+
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$RUN_LOG") 2>&1
+echo "本次完整启动日志：$RUN_LOG"
 
 NUM_DRONES=${1:-6}
 MISSION_FILE=${2:-mission_down.json}
@@ -51,15 +65,22 @@ cleanup() {
         kill -TERM "$SIMULATION_PID" 2>/dev/null || true
     fi
 
-    if [ "${MODEL_LINK_CREATED:-false}" = true ]; then
-        rm -f "$MODEL_LINK"
-    fi
-
     for pid in "$MISSION_PID" "${HELPER_PIDS[@]}" "$SIMULATION_PID"; do
         if [ -n "$pid" ]; then
             wait "$pid" 2>/dev/null || true
         fi
     done
+
+    if [ -n "$RUN_TMP_DIR" ]; then
+        case "$RUN_TMP_DIR" in
+        /tmp/robocup-fly-competition-clean.*)
+            rm -rf -- "$RUN_TMP_DIR"
+            ;;
+        *)
+            echo "拒绝清理非 competition-clean 临时目录：$RUN_TMP_DIR" >&2
+            ;;
+        esac
+    fi
 }
 
 on_interrupt() {
@@ -154,6 +175,36 @@ wait_for_communication() {
     return 1
 }
 
+all_cameras_ready() {
+    local id topic
+
+    for id in $(seq 0 5); do
+        for topic in \
+            "/typhoon_h480_${id}/realsense/depth_camera/color/image_raw" \
+            "/typhoon_h480_${id}/realsense/depth_camera/depth/image_raw" \
+            "/typhoon_h480_${id}/realsense/depth_camera/color/camera_info"; do
+            timeout 3s rostopic echo -n 1 "$topic" >/dev/null 2>&1 || return 1
+        done
+    done
+}
+
+wait_for_cameras() {
+    local deadline
+    deadline=$(( $(date +%s) + CAMERA_TIMEOUT_SECONDS ))
+
+    echo "等待六组 Realsense 彩色图、深度图和 CameraInfo（最长 ${CAMERA_TIMEOUT_SECONDS} 秒）..."
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if all_cameras_ready; then
+            echo "六组 Realsense 话题均已就绪。"
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "错误：Realsense 话题未在 ${CAMERA_TIMEOUT_SECONDS} 秒内全部就绪。" >&2
+    return 1
+}
+
 start_communication() {
     local python_bin="$1"
     local bridge_script="$2"
@@ -191,14 +242,17 @@ require_file "$WORKSPACE_DIR/devel/setup.bash" "Catkin 工作空间环境脚本"
 require_file "$WORKSPACE_DIR/scripts/graphics_environment.sh" "Gazebo 图形环境脚本"
 require_file "$SIMULATION_LAUNCH" "六机仿真 launch 文件"
 require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"
-require_file "$PX4_DIR/launch/single_vehicle_spawn_xtd.launch" "XTDrone 单机启动文件"
 require_file "$XTDRONE_DIR/sitl_config/models/walker/walk_0.dae" "XTDrone 行人模型"
 require_file "$XTDRONE_DIR/communication/multirotor_communication.py" "XTDrone 多旋翼通信脚本"
 require_file "$XTDRONE_PYTHON" "XTDrone Python 环境"
 require_file "$XTDRONE_PYTHONPATH/pyquaternion/__init__.py" "XTDrone Python 依赖"
 require_file "$GAZEBO_MODELS_DIR/cessna/model.sdf" "Gazebo 官方场景模型"
-require_file "$WORKSPACE_DIR/typhoon_h480_zzufly/typhoon_h480_zzufly.sdf" "自定义 Typhoon 模型文件"
-require_file "$WORKSPACE_DIR/src/gimbal/multi_gimbal_control.sh" "云台控制脚本"
+require_file "$COMPLIANCE_PYTHON" "合规自检 Python 环境"
+require_file "$PREPARE_MODEL" "合规模型生成器"
+require_file "$OFFICIAL_MANIFEST" "官方依赖校验清单"
+require_file "$SENSOR_MOUNT_CONFIG" "Realsense 安装配置"
+require_file "$XTDRONE_DIR/sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf" "XTDrone 官方 Realsense 机型"
+require_file "$XTDRONE_DIR/sitl_config/models/realsense_camera/realsense_camera.sdf" "XTDrone 官方 Realsense 传感器"
 require_file "$WORKSPACE_DIR/src/yolo/multi_yolo_detecting.sh" "YOLO 检测脚本"
 require_file "$WORKSPACE_DIR/src/yolo/multi_solving.sh" "坐标计算脚本"
 require_file "$WORKSPACE_DIR/devel/lib/libActorCollisionsPlugin.so" "Gazebo 行人碰撞插件"
@@ -214,22 +268,20 @@ export GAZEBO_MODEL_PATH="$PX4_DIR/Tools/sitl_gazebo/models:$XTDRONE_DIR/sitl_co
 export GAZEBO_PLUGIN_PATH="$WORKSPACE_DIR/devel/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}"
 ensure_graphics_environment || exit 1
 echo "Gazebo 图形显示：$DISPLAY"
-# single_vehicle_spawn_xtd.launch 从 PX4 的模型目录读取 SDF；本项目的自定义
-# Typhoon 模型保存在工作空间根目录，因此为本次启动临时链接到该目录。
-MODEL_LINK="$PX4_DIR/Tools/sitl_gazebo/models/typhoon_h480_zzufly"
-MODEL_LINK_CREATED=false
-if [ -L "$MODEL_LINK" ] && [ ! -e "$MODEL_LINK" ]; then
-    echo "错误：PX4 自定义模型路径是损坏的符号链接：$MODEL_LINK" >&2
+
+if ! RUN_TMP_DIR="$(mktemp -d /tmp/robocup-fly-competition-clean.XXXXXX)"; then
+    echo "错误：无法创建 competition-clean 临时目录。" >&2
     exit 1
-elif [ ! -e "$MODEL_LINK" ]; then
-    if [ ! -w "$(dirname "$MODEL_LINK")" ]; then
-        echo "错误：无权创建 PX4 自定义模型链接：$(dirname "$MODEL_LINK")" >&2
-        exit 1
-    fi
-    ln -s "$WORKSPACE_DIR/typhoon_h480_zzufly" "$MODEL_LINK"
-    MODEL_LINK_CREATED=true
-elif [ ! -d "$MODEL_LINK" ] || [ ! -f "$MODEL_LINK/typhoon_h480_zzufly.sdf" ]; then
-    echo "错误：PX4 自定义模型路径无效或缺少 typhoon_h480_zzufly.sdf：$MODEL_LINK" >&2
+fi
+GENERATED_MODEL="$RUN_TMP_DIR/typhoon_h480_realsense.sdf"
+echo "执行快速合规自检并生成临时模型..."
+if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" \
+    --px4-dir "$PX4_DIR" \
+    --xtdrone-dir "$XTDRONE_DIR" \
+    --manifest "$OFFICIAL_MANIFEST" \
+    --mount-config "$SENSOR_MOUNT_CONFIG" \
+    --output "$GENERATED_MODEL" >/dev/null; then
+    echo "错误：快速合规自检或临时模型生成失败。" >&2
     exit 1
 fi
 
@@ -250,7 +302,7 @@ echo "  任务文件:   $MISSION_FILE"
 echo "============================================"
 
 echo "启动 Gazebo、PX4 SITL 和 MAVROS..."
-roslaunch "$SIMULATION_LAUNCH" &
+roslaunch "$SIMULATION_LAUNCH" model_file:="$GENERATED_MODEL" &
 SIMULATION_PID=$!
 
 if ! wait_for_simulator; then
@@ -262,7 +314,10 @@ if ! wait_for_communication; then
     exit 1
 fi
 
-start_helper "$WORKSPACE_DIR/src/gimbal" "multi_gimbal_control.sh" "云台控制"
+if ! wait_for_cameras; then
+    exit 1
+fi
+
 start_helper "$WORKSPACE_DIR/src/yolo" "multi_yolo_detecting.sh" "YOLO 检测"
 start_helper "$WORKSPACE_DIR/src/yolo" "multi_solving.sh" "坐标计算"
 
