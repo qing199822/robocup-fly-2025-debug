@@ -35,3 +35,7 @@ __pycache__/
 /save.sh
 /.vscode/
 /.worktrees/
+
+# Competition-clean generated evidence and temporary launch artifacts
+/logs/competition-clean/
+/competition-artifacts/
