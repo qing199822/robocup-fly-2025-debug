@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Vehicle pose -->
+    <arg name="x" default="0"/>
+    <arg name="y" default="0"/>
+    <arg name="z" default="0"/>
+    <arg name="R" default="0"/>
+    <arg name="P" default="0"/>
+    <arg name="Y" default="0"/>
+
+    <!-- Vehicle model and config -->
+    <arg name="sdf_file"/>
+    <arg name="est" default="ekf2"/>
+    <arg name="vehicle" default="typhoon_h480"/>
+    <arg name="ID" default="0"/>
+    <arg name="ID_in_group" default="0"/>
+    <env name="PX4_SIM_MODEL" value="$(arg vehicle)"/>
+    <env name="PX4_ESTIMATOR" value="$(arg est)"/>
+    <arg name="mavlink_udp_port" default="14560"/>
+    <arg name="mavlink_tcp_port" default="4560"/>
+    <arg name="udp_gimbal_port" default="13030"/>
+
+    <!-- PX4 configs -->
+    <arg name="interactive" default="true"/>
+
+    <!-- Generate the runtime model from the caller-owned temporary SDF. -->
+    <param name="model_description" command="xmlstarlet ed -d '//plugin[@name=&quot;mavlink_interface&quot;]/mavlink_tcp_port' -s '//plugin[@name=&quot;mavlink_interface&quot;]' -t elem -n mavlink_tcp_port -v $(arg mavlink_tcp_port) -u '//plugin[@name=&quot;gimbal_controller&quot;]/udp_gimbal_port_remote' -v $(arg udp_gimbal_port) $(arg sdf_file)"/>
+
+    <!-- PX4 SITL -->
+    <arg unless="$(arg interactive)" name="px4_command_arg1" value=""/>
+    <arg if="$(arg interactive)" name="px4_command_arg1" value="-d"/>
+    <node name="sitl_$(arg ID)" pkg="px4" type="px4" output="screen"
+          args="$(find px4)/ROMFS/px4fmu_common -s etc/init.d-posix/rcS -i $(arg ID) -w sitl_$(arg vehicle)_$(arg ID) $(arg px4_command_arg1)"/>
+
+    <!-- Spawn vehicle -->
+    <node name="$(arg vehicle)_$(arg ID)_spawn" pkg="gazebo_ros" type="spawn_model" output="screen"
+          args="-sdf -param model_description -model $(arg vehicle)_$(arg ID_in_group) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
+</launch>

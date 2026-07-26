@@ -9,6 +9,10 @@ install(DIRECTORY config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
+install(DIRECTORY launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
 catkin_install_python(PROGRAMS
   scripts/prepare_model.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -17,4 +21,5 @@ catkin_install_python(PROGRAMS
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_model.py)
   catkin_add_nosetests(test/test_manifest.py)
+  catkin_add_nosetests(test/test_launch_contract.py)
 endif()

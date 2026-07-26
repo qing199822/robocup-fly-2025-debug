@@ -3,6 +3,7 @@
     <!-- MAVROS posix SITL environment launch script -->
     <!-- launches Gazebo environment and 2x: MAVROS, PX4 SITL, and spawns vehicle -->
     <!-- vehicle model and world -->
+    <arg name="model_file"/>
     <arg name="est" default="ekf2"/>
     <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/robocup.world"/>
     <!-- gazebo configs -->
@@ -25,7 +26,7 @@
             <arg name="ID_in_group" value="0"/>
             <arg name="fcu_url" default="udp://:24540@localhost:34580"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-17"/>
             <arg name="y" value="-3"/>
             <arg name="z" value="1"/>
@@ -33,7 +34,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18570"/>
             <arg name="mavlink_tcp_port" value="4560"/>
             <arg name="udp_gimbal_port" value="13030"/>
@@ -55,7 +56,7 @@
             <arg name="ID_in_group" value="1"/>
             <arg name="fcu_url" default="udp://:24541@localhost:34581"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-14"/>
             <arg name="y" value="-3"/>
             <arg name="z" value="1"/>
@@ -63,7 +64,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18571"/>
             <arg name="mavlink_tcp_port" value="4561"/>
             <arg name="udp_gimbal_port" value="13031"/>
@@ -85,7 +86,7 @@
             <arg name="ID_in_group" value="2"/>
             <arg name="fcu_url" default="udp://:24542@localhost:34582"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-17"/>
             <arg name="y" value="0"/>
             <arg name="z" value="1"/>
@@ -93,7 +94,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18572"/>
             <arg name="mavlink_tcp_port" value="4562"/>
             <arg name="udp_gimbal_port" value="13032"/>
@@ -115,7 +116,7 @@
             <arg name="ID_in_group" value="3"/>
             <arg name="fcu_url" default="udp://:24543@localhost:34583"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-14"/>
             <arg name="y" value="0"/>
             <arg name="z" value="1"/>
@@ -123,7 +124,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18573"/>
             <arg name="mavlink_tcp_port" value="4563"/>
             <arg name="udp_gimbal_port" value="13033"/>
@@ -145,7 +146,7 @@
             <arg name="ID_in_group" value="4"/>
             <arg name="fcu_url" default="udp://:24544@localhost:34584"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-17"/>
             <arg name="y" value="3"/>
             <arg name="z" value="1"/>
@@ -153,7 +154,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18574"/>
             <arg name="mavlink_tcp_port" value="4564"/>
             <arg name="udp_gimbal_port" value="13034"/>
@@ -175,7 +176,7 @@
             <arg name="ID_in_group" value="5"/>
             <arg name="fcu_url" default="udp://:24545@localhost:34585"/>
         <!-- PX4 SITL and vehicle spawn -->
-        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+        <include file="$(find competition_compliance)/launch/single_vehicle_spawn_clean.launch">
             <arg name="x" value="-14"/>
             <arg name="y" value="3"/>
             <arg name="z" value="1"/>
@@ -183,7 +184,7 @@
             <arg name="P" value="0"/>
             <arg name="Y" value="0"/>
             <arg name="vehicle" value="typhoon_h480"/>
-            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="sdf_file" value="$(arg model_file)"/>
             <arg name="mavlink_udp_port" value="18575"/>
             <arg name="mavlink_tcp_port" value="4565"/>
             <arg name="udp_gimbal_port" value="13035"/>
