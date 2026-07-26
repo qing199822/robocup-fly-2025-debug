@@ -34,3 +34,4 @@ __pycache__/
 # Local-only helper and editor configuration
 /save.sh
 /.vscode/
+/.worktrees/
