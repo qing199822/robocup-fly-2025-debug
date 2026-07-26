@@ -117,6 +117,12 @@ def collect_versions(xtdrone_dir):
             raise ComplianceError(
                 "版本检查失败 {}：{}".format(label, detail)
             ) from error
+        except OSError as error:
+            raise ComplianceError(
+                "无法执行版本检查 {}（命令 {}）：{}".format(
+                    label, command[0], error
+                )
+            ) from error
 
     def package_version(name):
         return run_version_command(

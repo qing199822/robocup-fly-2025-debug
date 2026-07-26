@@ -231,6 +231,14 @@ class ManifestTest(unittest.TestCase):
 
     @mock.patch(
         "competition_compliance.manifest.subprocess.check_output",
+        side_effect=PermissionError("permission denied"),
+    )
+    def test_version_command_os_error_becomes_compliance_error(self, _check_output):
+        with self.assertRaisesRegex(ComplianceError, "版本.*dpkg-query"):
+            collect_versions(pathlib.Path("/tmp/not-used"))
+
+    @mock.patch(
+        "competition_compliance.manifest.subprocess.check_output",
         side_effect=("1\n", "2\n", "3\n", "commit\n"),
     )
     def test_collect_versions_uses_exact_commands(self, check_output):
