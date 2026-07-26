@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
-import os
 import pathlib
 import shlex
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -21,23 +19,21 @@ CLEAN_INCLUDE = (
     "$(find competition_compliance)/launch/"
     "single_vehicle_spawn_clean.launch"
 )
-
-
-def _default_xtdrone_dir():
-    for directory in (WORKSPACE, *WORKSPACE.parents):
-        candidate = directory / "XTDrone"
-        if candidate.is_dir():
-            return candidate
-    return WORKSPACE.parent / "XTDrone"
-
-
-XTDRONE_DIR = pathlib.Path(
-    os.environ.get("XTDRONE_DIR", str(_default_xtdrone_dir()))
-)
-OFFICIAL_REALSENSE_SDF = (
-    XTDRONE_DIR
-    / "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf"
-)
+MINIMAL_RUNTIME_SDF = """<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="clean_test_model">
+    <static>false</static>
+    <plugin name="mavlink_interface" filename="libgazebo_mavlink_interface.so">
+      <mavlink_addr>INADDR_ANY</mavlink_addr>
+      <mavlink_udp_port>14560</mavlink_udp_port>
+      <mavlink_tcp_port>4560</mavlink_tcp_port>
+    </plugin>
+    <plugin name="gimbal_controller" filename="libgazebo_gimbal_controller_plugin.so">
+      <joint_name>camera_joint</joint_name>
+    </plugin>
+  </model>
+</sdf>
+"""
 
 
 def required_arg(root, name):
@@ -212,7 +208,7 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
             model_directory = pathlib.Path(directory) / "model inputs"
             model_directory.mkdir()
             model_file = model_directory / "vehicle copy.sdf"
-            shutil.copyfile(str(OFFICIAL_REALSENSE_SDF), str(model_file))
+            model_file.write_text(MINIMAL_RUNTIME_SDF, encoding="utf-8")
 
             argv = self.model_description_argv(model_file)
             self.assertEqual(str(model_file), argv[-1])
@@ -225,6 +221,7 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
                 shell=False,
             )
 
+            self.assertEqual(MINIMAL_RUNTIME_SDF, model_file.read_text(encoding="utf-8"))
             before = ET.parse(str(model_file)).getroot()
             after = ET.fromstring(completed.stdout)
             before_tcp = before.findall(
@@ -298,9 +295,8 @@ class PackageMetadataContractTest(unittest.TestCase):
             for element in root.findall("./exec_depend")
             if element.text
         }
-        self.assertTrue(
-            {"roslaunch", "gazebo_ros", "px4", "xmlstarlet"}.issubset(dependencies)
-        )
+        self.assertTrue({"roslaunch", "gazebo_ros", "px4"}.issubset(dependencies))
+        self.assertNotIn("xmlstarlet", dependencies)
 
 
 if __name__ == "__main__":

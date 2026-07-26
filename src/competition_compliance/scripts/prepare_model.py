@@ -2,6 +2,7 @@
 
 import argparse
 import pathlib
+import shutil
 import sys
 
 from competition_compliance.manifest import (
@@ -10,6 +11,15 @@ from competition_compliance.manifest import (
     verify_versions,
 )
 from competition_compliance.model import ComplianceError, generate_model, load_mount_pose
+
+
+def require_xmlstarlet():
+    executable = shutil.which("xmlstarlet")
+    if executable is None:
+        raise ComplianceError(
+            "未找到 xmlstarlet 命令。请运行 sudo apt install xmlstarlet 后重试。"
+        )
+    return pathlib.Path(executable)
 
 
 def main():
@@ -21,6 +31,7 @@ def main():
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args()
 
+    require_xmlstarlet()
     manifest = verify_manifest(
         args.manifest,
         {"PX4_DIR": args.px4_dir, "XTDRONE_DIR": args.xtdrone_dir},

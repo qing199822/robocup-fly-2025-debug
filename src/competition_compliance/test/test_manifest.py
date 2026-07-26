@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import hashlib
+import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -78,6 +80,15 @@ EXPECTED_OFFICIAL_MANIFEST = {
         },
     ],
 }
+
+
+def load_prepare_model_module():
+    spec = importlib.util.spec_from_file_location(
+        "competition_compliance_prepare_model", str(PREPARE_MODEL)
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ManifestTest(unittest.TestCase):
@@ -531,6 +542,51 @@ class ManifestTest(unittest.TestCase):
             "恢复方法：不要修改官方目录；按 docs/TROUBLESHOOTING.md 恢复对应版本后重试。",
             result.stderr,
         )
+
+    def test_prepare_cli_reports_missing_xmlstarlet_before_manifest_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            environment = os.environ.copy()
+            environment["PATH"] = ""
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PREPARE_MODEL),
+                    "--px4-dir",
+                    str(root),
+                    "--xtdrone-dir",
+                    str(root),
+                    "--manifest",
+                    str(root / "missing.json"),
+                    "--mount-config",
+                    str(root / "mount.yaml"),
+                    "--output",
+                    str(root / "output.sdf"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("xmlstarlet", result.stderr)
+        self.assertIn("sudo apt install xmlstarlet", result.stderr)
+        self.assertNotIn("无法读取官方清单", result.stderr)
+
+    def test_xmlstarlet_preflight_accepts_available_executable_path(self):
+        prepare_model = load_prepare_model_module()
+        with mock.patch.object(
+            prepare_model.shutil,
+            "which",
+            return_value="/opt/team-tools/xmlstarlet",
+        ) as which:
+            self.assertEqual(
+                pathlib.Path("/opt/team-tools/xmlstarlet"),
+                prepare_model.require_xmlstarlet(),
+            )
+        which.assert_called_once_with("xmlstarlet")
 
 
 if __name__ == "__main__":
