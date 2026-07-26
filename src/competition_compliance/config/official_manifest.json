@@ -1,0 +1,17 @@
+{
+  "versions": {
+    "gazebo11": "11.15.1-1~focal",
+    "ros-noetic-gazebo-ros": "2.9.3-1focal.20250521.003802",
+    "ros-noetic-gazebo-ros-pkgs": "2.9.3-1focal.20250521.011748",
+    "xtdrone_commit": "8e88116dc15a19e5eba06300897fcfec4ab2da11"
+  },
+  "files": [
+    {"root": "PX4_DIR", "path": "Tools/sitl_gazebo/models/typhoon_h480/typhoon_h480.sdf", "sha256": "4f3ae25801c704e1f9e640eaf1717e6a06a688256ad8f6ad5a0872a2843c4680"},
+    {"root": "PX4_DIR", "path": "Tools/sitl_gazebo/worlds/robocup.world", "sha256": "b17daad2b9662760aba6defbd1637214e6d4832e3828ec13ca342f544c6e0b98"},
+    {"root": "PX4_DIR", "path": "launch/single_vehicle_spawn_xtd.launch", "sha256": "05bb251d1bebf28890cc03191a7fbbe0e121a5e2929a18b8968eb3d9ac071e7e"},
+    {"root": "XTDRONE_DIR", "path": "sitl_config/models/typhoon_h480/typhoon_h480.sdf", "sha256": "1346f71a33130e3f5634b1513cc5598d1dc2693fdf30d13c2cf9dda2ef2cd29e"},
+    {"root": "XTDRONE_DIR", "path": "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf", "sha256": "3b056f3676e8f47b90421c5357eca8154e6686304855eb14467aa82bf60ddd46"},
+    {"root": "XTDRONE_DIR", "path": "sitl_config/models/realsense_camera/realsense_camera.sdf", "sha256": "0745c705ac3a90cf16529a9b49729d34f49ce7b457998a4d3cc3f2fb6aab921c"},
+    {"root": "XTDRONE_DIR", "path": "communication/multirotor_communication.py", "sha256": "64c13f6ad6de9181208cf584ac1b796d49d4f153935369b41e64a4b893a74d27"}
+  ]
+}
