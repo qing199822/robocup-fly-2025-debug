@@ -13,6 +13,7 @@ from competition_compliance.manifest import (
     collect_versions,
     load_manifest,
     sha256_file,
+    validate_output_path,
     verify_manifest,
     verify_versions,
 )
@@ -24,6 +25,13 @@ OFFICIAL_MANIFEST = (
     WORKSPACE / "src/competition_compliance/config/official_manifest.json"
 )
 PREPARE_MODEL = WORKSPACE / "src/competition_compliance/scripts/prepare_model.py"
+
+TEST_VERSIONS = {
+    "gazebo11": "1",
+    "ros-noetic-gazebo-ros": "2",
+    "ros-noetic-gazebo-ros-pkgs": "3",
+    "xtdrone_commit": "0" * 40,
+}
 
 EXPECTED_OFFICIAL_MANIFEST = {
     "versions": {
@@ -89,7 +97,7 @@ class ManifestTest(unittest.TestCase):
             manifest.write_text(
                 json.dumps(
                     {
-                        "versions": {},
+                        "versions": TEST_VERSIONS,
                         "files": [
                             {
                                 "root": "XTDRONE_DIR",
@@ -103,7 +111,7 @@ class ManifestTest(unittest.TestCase):
             )
 
             verified = verify_manifest(manifest, {"XTDRONE_DIR": root})
-            self.assertEqual({}, verified["versions"])
+            self.assertEqual(TEST_VERSIONS, verified["versions"])
             self.assertEqual(1, len(verified["files"]))
 
             target.write_text("changed", encoding="utf-8")
@@ -153,8 +161,8 @@ class ManifestTest(unittest.TestCase):
         invalid_documents = (
             [],
             {},
-            {"files": [], "versions": {}, "extra": True},
-            {"files": {}, "versions": {}},
+            {"files": [], "versions": TEST_VERSIONS, "extra": True},
+            {"files": {}, "versions": TEST_VERSIONS},
             {"files": [], "versions": []},
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -162,6 +170,60 @@ class ManifestTest(unittest.TestCase):
             for document in invalid_documents:
                 with self.subTest(document=document):
                     manifest = self.write_manifest(root, document)
+                    with self.assertRaises(ComplianceError):
+                        load_manifest(manifest)
+
+    def test_manifest_rejects_duplicate_keys_at_every_object_level(self):
+        versions_json = json.dumps(TEST_VERSIONS)
+        digest = "0" * 64
+        duplicate_documents = (
+            '{"versions": %s, "files": [], "files": []}' % versions_json,
+            (
+                '{"versions": {'
+                '"gazebo11": "1", "gazebo11": "duplicate", '
+                '"ros-noetic-gazebo-ros": "2", '
+                '"ros-noetic-gazebo-ros-pkgs": "3", '
+                '"xtdrone_commit": "%s"'
+                '}, "files": []}'
+            )
+            % ("0" * 40),
+            (
+                '{"versions": %s, "files": ['
+                '{"root": "ROOT", "root": "OTHER", '
+                '"path": "official.txt", "sha256": "%s"}]}'
+            )
+            % (versions_json, digest),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            for document in duplicate_documents:
+                with self.subTest(document=document):
+                    path.write_text(document, encoding="utf-8")
+                    with self.assertRaisesRegex(ComplianceError, "重复键"):
+                        load_manifest(path)
+
+    def test_manifest_requires_exact_nonempty_version_schema(self):
+        invalid_versions = (
+            {},
+            {**TEST_VERSIONS, "extra": "unexpected"},
+            {
+                key: value
+                for key, value in TEST_VERSIONS.items()
+                if key != "gazebo11"
+            },
+            {**TEST_VERSIONS, "gazebo11": ""},
+            {**TEST_VERSIONS, "ros-noetic-gazebo-ros": 2},
+            {**TEST_VERSIONS, "xtdrone_commit": "0" * 39},
+            {**TEST_VERSIONS, "xtdrone_commit": "A" * 40},
+            {**TEST_VERSIONS, "xtdrone_commit": "g" * 40},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for versions in invalid_versions:
+                with self.subTest(versions=versions):
+                    manifest = self.write_manifest(
+                        root, {"versions": versions, "files": []}
+                    )
                     with self.assertRaises(ComplianceError):
                         load_manifest(manifest)
 
@@ -188,7 +250,7 @@ class ManifestTest(unittest.TestCase):
             for entry in invalid_entries:
                 with self.subTest(entry=entry):
                     manifest = self.write_manifest(
-                        root, {"versions": {}, "files": [entry]}
+                        root, {"versions": TEST_VERSIONS, "files": [entry]}
                     )
                     with self.assertRaises(ComplianceError):
                         verify_manifest(manifest, {"ROOT": root})
@@ -200,7 +262,7 @@ class ManifestTest(unittest.TestCase):
             manifest = self.write_manifest(
                 root,
                 {
-                    "versions": {},
+                    "versions": TEST_VERSIONS,
                     "files": [
                         {"root": "ROOT", "path": "missing", "sha256": digest}
                     ],
@@ -210,6 +272,127 @@ class ManifestTest(unittest.TestCase):
                 verify_manifest(manifest, {})
             with self.assertRaisesRegex(ComplianceError, "找不到官方文件"):
                 verify_manifest(manifest, {"ROOT": root})
+
+    def test_final_file_symlink_is_rejected_even_when_target_stays_in_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "official.txt"
+            target.write_text("official", encoding="utf-8")
+            (root / "alias.txt").symlink_to(target.name)
+            manifest = self.write_manifest(
+                root,
+                {
+                    "versions": TEST_VERSIONS,
+                    "files": [
+                        {
+                            "root": "ROOT",
+                            "path": "alias.txt",
+                            "sha256": hashlib.sha256(b"official").hexdigest(),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ComplianceError, "符号链接.*alias.txt"):
+                verify_manifest(manifest, {"ROOT": root})
+
+    def test_intermediate_directory_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            real_directory = root / "real"
+            real_directory.mkdir()
+            (real_directory / "official.txt").write_text(
+                "official", encoding="utf-8"
+            )
+            (root / "alias").symlink_to(real_directory.name, target_is_directory=True)
+            manifest = self.write_manifest(
+                root,
+                {
+                    "versions": TEST_VERSIONS,
+                    "files": [
+                        {
+                            "root": "ROOT",
+                            "path": "alias/official.txt",
+                            "sha256": hashlib.sha256(b"official").hexdigest(),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ComplianceError, "符号链接.*alias"):
+                verify_manifest(manifest, {"ROOT": root})
+
+    def test_symlink_to_file_outside_declared_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            root = temporary / "root"
+            root.mkdir()
+            outside = temporary / "outside.txt"
+            outside.write_text("official", encoding="utf-8")
+            (root / "alias.txt").symlink_to(outside)
+            manifest = self.write_manifest(
+                temporary,
+                {
+                    "versions": TEST_VERSIONS,
+                    "files": [
+                        {
+                            "root": "ROOT",
+                            "path": "alias.txt",
+                            "sha256": hashlib.sha256(b"official").hexdigest(),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaises(ComplianceError):
+                verify_manifest(manifest, {"ROOT": root})
+
+    def test_output_directly_under_each_official_root_is_rejected(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            temporary = pathlib.Path(directory)
+            px4 = temporary / "PX4_Firmware"
+            xtdrone = temporary / "XTDrone"
+            px4.mkdir()
+            xtdrone.mkdir()
+            roots = {"PX4_DIR": px4, "XTDRONE_DIR": xtdrone}
+
+            for output in (px4 / "generated.sdf", xtdrone / "generated.sdf"):
+                with self.subTest(output=output):
+                    with self.assertRaisesRegex(ComplianceError, "官方目录"):
+                        validate_output_path(output, roots)
+
+    def test_output_symlinked_parent_into_official_root_is_rejected(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            temporary = pathlib.Path(directory)
+            px4 = temporary / "PX4_Firmware"
+            xtdrone = temporary / "XTDrone"
+            px4.mkdir()
+            xtdrone.mkdir()
+            alias = temporary / "output-alias"
+            alias.symlink_to(px4, target_is_directory=True)
+
+            with self.assertRaisesRegex(ComplianceError, "官方目录"):
+                validate_output_path(
+                    alias / "generated.sdf",
+                    {"PX4_DIR": px4, "XTDRONE_DIR": xtdrone},
+                )
+
+    def test_normal_tmp_output_is_accepted(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            temporary = pathlib.Path(directory)
+            px4 = temporary / "PX4_Firmware"
+            xtdrone = temporary / "XTDrone"
+            output_directory = temporary / "generated"
+            px4.mkdir()
+            xtdrone.mkdir()
+
+            output = output_directory / "model.sdf"
+            self.assertEqual(
+                output.resolve(strict=False),
+                validate_output_path(
+                    output, {"PX4_DIR": px4, "XTDRONE_DIR": xtdrone}
+                ),
+            )
 
     @mock.patch(
         "competition_compliance.manifest.subprocess.check_output",
@@ -234,6 +417,18 @@ class ManifestTest(unittest.TestCase):
         side_effect=PermissionError("permission denied"),
     )
     def test_version_command_os_error_becomes_compliance_error(self, _check_output):
+        with self.assertRaisesRegex(ComplianceError, "版本.*dpkg-query"):
+            collect_versions(pathlib.Path("/tmp/not-used"))
+
+    @mock.patch(
+        "competition_compliance.manifest.subprocess.check_output",
+        side_effect=UnicodeDecodeError(
+            "utf-8", b"\xff", 0, 1, "invalid start byte"
+        ),
+    )
+    def test_version_command_unicode_error_becomes_compliance_error(
+        self, _check_output
+    ):
         with self.assertRaisesRegex(ComplianceError, "版本.*dpkg-query"):
             collect_versions(pathlib.Path("/tmp/not-used"))
 
@@ -290,13 +485,19 @@ class ManifestTest(unittest.TestCase):
 
     @mock.patch("competition_compliance.manifest.collect_versions")
     def test_verify_versions_requires_exact_match(self, collect):
-        expected = {"gazebo11": "expected"}
+        expected = {**TEST_VERSIONS, "gazebo11": "expected"}
         collect.return_value = expected.copy()
         self.assertEqual(expected, verify_versions({"versions": expected}, "/xtdrone"))
 
-        collect.return_value = {"gazebo11": "actual"}
+        collect.return_value = {**expected, "gazebo11": "actual"}
         with self.assertRaisesRegex(ComplianceError, "期望.*expected.*实际.*actual"):
             verify_versions({"versions": expected}, "/xtdrone")
+
+    @mock.patch("competition_compliance.manifest.collect_versions")
+    def test_verify_versions_validates_schema_before_commands(self, collect):
+        with self.assertRaises(ComplianceError):
+            verify_versions({"versions": {}}, "/xtdrone")
+        collect.assert_not_called()
 
     def test_repository_manifest_matches_official_inputs_exactly(self):
         self.assertEqual(EXPECTED_OFFICIAL_MANIFEST, load_manifest(OFFICIAL_MANIFEST))

@@ -4,7 +4,11 @@ import argparse
 import pathlib
 import sys
 
-from competition_compliance.manifest import verify_manifest, verify_versions
+from competition_compliance.manifest import (
+    validate_output_path,
+    verify_manifest,
+    verify_versions,
+)
 from competition_compliance.model import ComplianceError, generate_model, load_mount_pose
 
 
@@ -23,13 +27,17 @@ def main():
     )
     verify_versions(manifest, args.xtdrone_dir)
     pose = load_mount_pose(args.mount_config)
+    output = validate_output_path(
+        args.output,
+        {"PX4_DIR": args.px4_dir, "XTDRONE_DIR": args.xtdrone_dir},
+    )
     official = (
         args.xtdrone_dir
         / "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf"
     )
-    generate_model(official, args.output, pose)
+    generate_model(official, output, pose)
     print(pose.to_sdf(), file=sys.stderr)
-    print(args.output.resolve())
+    print(output)
 
 
 if __name__ == "__main__":

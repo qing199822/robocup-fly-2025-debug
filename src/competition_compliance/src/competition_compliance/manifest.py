@@ -10,6 +10,35 @@ from competition_compliance.model import ComplianceError
 _BLOCK_SIZE = 1024 * 1024
 _ENTRY_KEYS = {"root", "path", "sha256"}
 _MANIFEST_KEYS = {"files", "versions"}
+_VERSION_KEYS = {
+    "gazebo11",
+    "ros-noetic-gazebo-ros",
+    "ros-noetic-gazebo-ros-pkgs",
+    "xtdrone_commit",
+}
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ComplianceError("官方清单 JSON 包含重复键：{}".format(key))
+        result[key] = value
+    return result
+
+
+def _validate_versions(versions):
+    if not isinstance(versions, dict) or set(versions) != _VERSION_KEYS:
+        raise ComplianceError("官方清单 versions 必须恰好包含四个规定版本键")
+    for name, value in versions.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ComplianceError("官方版本 {} 必须为非空字符串".format(name))
+    commit = versions["xtdrone_commit"]
+    if (
+        len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+    ):
+        raise ComplianceError("XTDrone Git 提交必须为 40 位小写十六进制字符串")
 
 
 def sha256_file(path):
@@ -27,7 +56,9 @@ def sha256_file(path):
 def load_manifest(path):
     path = pathlib.Path(path)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
     except OSError as error:
         raise ComplianceError("无法读取官方清单 {}：{}".format(path, error)) from error
     except UnicodeError as error:
@@ -41,6 +72,7 @@ def load_manifest(path):
         raise ComplianceError("官方清单只能包含 files 和 versions")
     if not isinstance(data["files"], list) or not isinstance(data["versions"], dict):
         raise ComplianceError("官方清单格式无效：files 必须为数组，versions 必须为对象")
+    _validate_versions(data["versions"])
     return data
 
 
@@ -78,15 +110,41 @@ def verify_manifest(path, roots):
                 "官方文件路径必须位于声明目录内：{}".format(entry["path"])
             )
         try:
-            target = pathlib.Path(roots[root_name]) / pathlib.Path(*relative.parts)
-        except (OSError, TypeError, ValueError) as error:
+            declared_root = pathlib.Path(roots[root_name])
+            resolved_root = declared_root.resolve(strict=True)
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
             raise ComplianceError(
                 "官方目录参数无效 {}：{}".format(root_name, error)
             ) from error
-        if not target.is_file():
+        if not resolved_root.is_dir():
+            raise ComplianceError("官方目录参数不是目录：{}".format(declared_root))
+
+        target = declared_root / pathlib.Path(*relative.parts)
+        component = declared_root
+        for part in relative.parts:
+            component = component / part
+            if component.is_symlink():
+                raise ComplianceError(
+                    "官方文件路径包含符号链接：{}".format(entry["path"])
+                )
+        try:
+            resolved_target = target.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise ComplianceError("找不到官方文件：{}".format(target))
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ComplianceError(
+                "无法解析官方文件 {}：{}".format(target, error)
+            ) from error
+        try:
+            resolved_target.relative_to(resolved_root)
+        except ValueError as error:
+            raise ComplianceError(
+                "官方文件路径超出声明目录：{}".format(entry["path"])
+            ) from error
+        if not resolved_target.is_file():
             raise ComplianceError("找不到官方文件：{}".format(target))
 
-        actual = sha256_file(target)
+        actual = sha256_file(resolved_target)
         expected = entry["sha256"]
         if actual != expected:
             raise ComplianceError(
@@ -95,6 +153,37 @@ def verify_manifest(path, roots):
                 )
             )
     return manifest
+
+
+def validate_output_path(output_path, roots):
+    if not isinstance(roots, Mapping):
+        raise ComplianceError("官方目录参数必须为 root 到目录的映射")
+    try:
+        resolved_output = pathlib.Path(output_path).resolve(strict=False)
+    except (OSError, TypeError, ValueError, RuntimeError) as error:
+        raise ComplianceError("无法解析生成模型路径 {}：{}".format(output_path, error)) from error
+
+    for root_name in ("PX4_DIR", "XTDRONE_DIR"):
+        if root_name not in roots:
+            raise ComplianceError("缺少官方目录参数：{}".format(root_name))
+        try:
+            resolved_root = pathlib.Path(roots[root_name]).resolve(strict=True)
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            raise ComplianceError(
+                "官方目录参数无效 {}：{}".format(root_name, error)
+            ) from error
+        if not resolved_root.is_dir():
+            raise ComplianceError("官方目录参数不是目录：{}".format(resolved_root))
+        try:
+            resolved_output.relative_to(resolved_root)
+        except ValueError:
+            continue
+        raise ComplianceError(
+            "生成模型路径不得位于官方目录 {} 内：{}".format(
+                root_name, resolved_output
+            )
+        )
+    return resolved_output
 
 
 def collect_versions(xtdrone_dir):
@@ -116,6 +205,12 @@ def collect_versions(xtdrone_dir):
             detail = str(output).strip() if output else "无输出"
             raise ComplianceError(
                 "版本检查失败 {}：{}".format(label, detail)
+            ) from error
+        except UnicodeError as error:
+            raise ComplianceError(
+                "版本检查无法解码 {}（命令 {}）：{}".format(
+                    label, command[0], error
+                )
             ) from error
         except OSError as error:
             raise ComplianceError(
@@ -146,6 +241,7 @@ def verify_versions(manifest, xtdrone_dir):
     if not isinstance(manifest, dict) or not isinstance(manifest.get("versions"), dict):
         raise ComplianceError("官方清单 versions 必须为对象")
     expected = manifest["versions"]
+    _validate_versions(expected)
     actual = collect_versions(xtdrone_dir)
     if actual != expected:
         raise ComplianceError(
