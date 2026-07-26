@@ -7,6 +7,7 @@ import pathlib
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from unittest import mock
 
 from competition_compliance.model import (
     ComplianceError,
@@ -64,6 +65,10 @@ class ModelGenerationTest(unittest.TestCase):
         with self.assertRaises(ComplianceError):
             MountPose.from_values([0, 0, 0, 0, 0, "not-a-number"])
 
+    def test_mount_pose_overflow_is_reported_as_compliance_error(self):
+        with self.assertRaises(ComplianceError):
+            MountPose.from_values([0, 0, 0, 0, 0, 10**10000])
+
     def test_generation_changes_only_realsense_include_pose(self):
         pose = MountPose.from_values([0.1, 0.0, -0.05, 0.0, 0.2, 0.0])
         with tempfile.TemporaryDirectory() as directory:
@@ -88,6 +93,18 @@ class ModelGenerationTest(unittest.TestCase):
             with self.assertRaises(ComplianceError):
                 assert_only_mount_pose_changed(OFFICIAL, output)
 
+    def test_non_whitespace_tail_change_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "model.sdf"
+            generate_model(OFFICIAL, output, MountPose.from_values([0] * 6))
+            tree = ET.parse(str(output))
+            mass = tree.getroot().find("./model/link/inertial/mass")
+            mass.tail = (mass.tail or "") + "tampered"
+            tree.write(str(output), encoding="utf-8", xml_declaration=True)
+
+            with self.assertRaises(ComplianceError):
+                assert_only_mount_pose_changed(OFFICIAL, output)
+
     def test_missing_realsense_include_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
 
@@ -109,6 +126,33 @@ class ModelGenerationTest(unittest.TestCase):
                 root.find("./model").append(copy.deepcopy(realsense_includes(root)[0]))
 
             variant = write_variant(directory, duplicate_include)
+            with self.assertRaises(ComplianceError):
+                generate_model(
+                    variant,
+                    pathlib.Path(directory) / "out.sdf",
+                    MountPose.from_values([0] * 6),
+                )
+
+    def test_malformed_official_mount_pose_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+
+            def truncate_pose(root):
+                realsense_includes(root)[0].find("pose").text = "0 0 0"
+
+            variant = write_variant(directory, truncate_pose)
+            output = pathlib.Path(directory) / "out.sdf"
+            with self.assertRaises(ComplianceError):
+                generate_model(variant, output, MountPose.from_values([0] * 6))
+            self.assertFalse(output.exists())
+
+    def test_duplicate_official_mount_pose_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+
+            def duplicate_pose(root):
+                include = realsense_includes(root)[0]
+                ET.SubElement(include, "pose").text = "0 0 0 0 0 0"
+
+            variant = write_variant(directory, duplicate_pose)
             with self.assertRaises(ComplianceError):
                 generate_model(
                     variant,
@@ -149,6 +193,17 @@ class ModelGenerationTest(unittest.TestCase):
                     with self.assertRaises(ComplianceError):
                         load_mount_pose(path)
 
+    def test_mount_config_rejects_duplicate_keys(self):
+        document = (
+            "realsense_mount: [0, 0, 0, 0, 0, 0]\n"
+            "realsense_mount: [1, 1, 1, 1, 1, 1]\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mount.yaml"
+            path.write_text(document, encoding="utf-8")
+            with self.assertRaises(ComplianceError):
+                load_mount_pose(path)
+
     def test_existing_output_file_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "model.sdf"
@@ -156,6 +211,17 @@ class ModelGenerationTest(unittest.TestCase):
             with self.assertRaises(ComplianceError):
                 generate_model(OFFICIAL, output, MountPose.from_values([0] * 6))
             self.assertEqual("keep-me", output.read_text(encoding="utf-8"))
+
+    def test_post_write_validation_failure_removes_new_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "model.sdf"
+            with mock.patch(
+                "competition_compliance.model.assert_only_mount_pose_changed",
+                side_effect=ComplianceError("forced validation failure"),
+            ):
+                with self.assertRaises(ComplianceError):
+                    generate_model(OFFICIAL, output, MountPose.from_values([0] * 6))
+            self.assertFalse(output.exists())
 
     def test_malformed_xml_is_reported_as_compliance_error(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -7,6 +7,32 @@ import xml.etree.ElementTree as ET
 import yaml
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        self.flatten_mapping(node)
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unacceptable key: {}".format(error),
+                    key_node.start_mark,
+                ) from error
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found duplicate key: {!r}".format(key),
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
 class ComplianceError(RuntimeError):
     pass
 
@@ -29,7 +55,10 @@ class MountPose:
             for value in values
         ):
             raise ComplianceError("Realsense 安装位姿包含非数字值")
-        numbers_ = tuple(float(value) for value in values)
+        try:
+            numbers_ = tuple(float(value) for value in values)
+        except OverflowError as error:
+            raise ComplianceError("Realsense 安装位姿数值超出可表示范围") from error
         if not all(math.isfinite(value) for value in numbers_):
             raise ComplianceError("Realsense 安装位姿不能包含 NaN 或无穷值")
         return cls(*numbers_)
@@ -42,7 +71,7 @@ def load_mount_pose(path):
     path = pathlib.Path(path)
     try:
         text = path.read_text(encoding="utf-8")
-        data = yaml.safe_load(text)
+        data = yaml.load(text, Loader=_UniqueKeySafeLoader)
     except OSError as error:
         raise ComplianceError("无法读取安装配置 {}：{}".format(path, error)) from error
     except UnicodeError as error:
@@ -68,9 +97,11 @@ def _find_mount(root):
     if len(includes) != 1:
         raise ComplianceError("官方模型必须恰好包含一个 Realsense include")
 
-    pose = includes[0].find("pose")
-    if pose is None:
-        raise ComplianceError("Realsense include 缺少 pose")
+    poses = includes[0].findall("pose")
+    if len(poses) != 1:
+        raise ComplianceError("Realsense include 必须恰好包含一个 pose")
+    pose = poses[0]
+    _validate_sdf_pose(pose.text)
 
     joints = []
     for joint in root.findall("./model/joint"):
@@ -101,6 +132,7 @@ def _canonical(element, mount_pose):
         element.tag,
         tuple(sorted(element.attrib.items())),
         text,
+        (element.tail or "").strip(),
         tuple(_canonical(child, mount_pose) for child in list(element)),
     )
 
@@ -138,14 +170,30 @@ def generate_model(official_path, output_path, mount_pose):
         raise ComplianceError("无法创建模型目录 {}：{}".format(output_path.parent, error)) from error
 
     try:
-        with output_path.open("xb") as output:
-            tree.write(output, encoding="utf-8", xml_declaration=True)
+        output = output_path.open("xb")
     except FileExistsError as error:
         raise ComplianceError("拒绝覆盖已有生成模型：{}".format(output_path)) from error
     except OSError as error:
         raise ComplianceError("无法写入临时模型 {}：{}".format(output_path, error)) from error
 
-    assert_only_mount_pose_changed(official_path, output_path)
+    try:
+        with output:
+            tree.write(output, encoding="utf-8", xml_declaration=True)
+        assert_only_mount_pose_changed(official_path, output_path)
+    except Exception as error:
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_error:
+            raise ComplianceError(
+                "无法清理无效临时模型 {}：{}".format(output_path, cleanup_error)
+            ) from cleanup_error
+        if isinstance(error, OSError):
+            raise ComplianceError(
+                "无法写入临时模型 {}：{}".format(output_path, error)
+            ) from error
+        raise
 
 
 def assert_only_mount_pose_changed(official_path, generated_path):
