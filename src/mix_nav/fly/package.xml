@@ -13,8 +13,8 @@
   <author email="qing199822@users.noreply.github.com">ZZU FLY Team</author>
   
   <url type="website">http://wiki.ros.org/fly</url>
-  <url type="bugtracker">https://github.com/your-repo/fly/issues</url>
-  <url type="repository">https://github.com/your-repo/fly</url>
+  <url type="bugtracker">https://github.com/qing199822/robocup-fly-2025-debug/issues</url>
+  <url type="repository">https://github.com/qing199822/robocup-fly-2025-debug</url>
 
   <!-- 构建依赖 -->
   <buildtool_depend>catkin</buildtool_depend>

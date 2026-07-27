@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 
 import argparse
+import errno
 import json
 import os
 import pathlib
 import re
+import secrets
 import shlex
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
 from competition_compliance.manifest import (
+    load_manifest_with_digest,
     sha256_file,
-    verify_manifest,
+    verify_manifest_document,
     verify_versions,
 )
 from competition_compliance.model import ComplianceError
@@ -20,6 +23,7 @@ from competition_compliance.model import ComplianceError
 
 FORBIDDEN = ("src/gazebo_ros_pkgs", "typhoon_h480_zzufly", "src/gimbal")
 _BASE_ENTRY_KEYS = {"path", "kind", "source", "version", "license"}
+_THIRD_PARTY_ENTRY_KEYS = _BASE_ENTRY_KEYS | {"package_version", "verification"}
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _PLACEHOLDER_TOKENS = (
     "<license>TODO",
@@ -29,10 +33,12 @@ _PLACEHOLDER_TOKENS = (
     "your-email",
     "your_email",
     "your.email",
+    "your-repo",
 )
 _COMMENTED_IDENTITY = re.compile(
     r"<!--(?:(?!-->).)*<(?:author|maintainer)\b", re.DOTALL
 )
+_ZERO_DESCRIPTION = re.compile(r"<description(?:\s[^>]*)?>\s*0\s*</description>")
 _PROTECTED_VARIABLE = re.compile(
     r"\$(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?![A-Za-z0-9_])"
     r"|\$\{(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?:[^}]*)\}"
@@ -59,6 +65,21 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'PX4_DIR="${PX4_DIR:-$PROJECT_ROOT/PX4_Firmware}"',
         'XTDRONE_DIR="${XTDRONE_DIR:-$PROJECT_ROOT/XTDrone}"',
         'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
+        'if ! official_root_is_readonly_mount "$PX4_DIR"; then',
+        'echo "错误：sandbox 标记无效，PX4_DIR 并非独立只读挂载：$PX4_DIR" >&2',
+        'if ! official_root_is_readonly_mount "$XTDRONE_DIR"; then',
+        'echo "错误：sandbox 标记无效，XTDRONE_DIR 并非独立只读挂载：$XTDRONE_DIR" >&2',
+        'echo "错误：缺少 bubblewrap，无法保护 PX4/XTDrone 官方目录。请运行 sudo apt install bubblewrap 后重试。" >&2',
+        'if [ ! -d "$PX4_DIR" ] || [ -L "$PX4_DIR" ]; then',
+        'echo "错误：PX4_DIR 必须是存在的普通目录且最终组件不能是符号链接：$PX4_DIR" >&2',
+        'if [ ! -d "$XTDRONE_DIR" ] || [ -L "$XTDRONE_DIR" ]; then',
+        'echo "错误：XTDRONE_DIR 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_DIR" >&2',
+        'if ! resolved_px4="$(cd "$PX4_DIR" && pwd -P)"; then',
+        'echo "错误：无法解析 PX4_DIR：$PX4_DIR" >&2',
+        'if ! resolved_xtdrone="$(cd "$XTDRONE_DIR" && pwd -P)"; then',
+        'echo "错误：无法解析 XTDRONE_DIR：$XTDRONE_DIR" >&2',
+        'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
+        '/usr/bin/setsid "$bwrap_path" --die-with-parent --json-status-fd "$status_fd" --dev-bind / / --ro-bind "$PX4_DIR" "$PX4_DIR" --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" "$SCRIPT_DIR/1.sh" "$@" &',
         'require_file "$PX4_DIR/Tools/setup_gazebo.bash" "PX4 Gazebo 环境脚本"',
         'require_file "$PX4_BUILD_DIR/bin/px4" "PX4 SITL 编译产物"',
         'require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"',
@@ -69,8 +90,41 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'source "$PX4_DIR/Tools/setup_gazebo.bash" "$PX4_DIR" "$PX4_BUILD_DIR"',
         'export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:+${ROS_PACKAGE_PATH}:}$PX4_DIR:$PX4_DIR/Tools/sitl_gazebo"',
         'export GAZEBO_MODEL_PATH="$PX4_DIR/Tools/sitl_gazebo/models:$XTDRONE_DIR/sitl_config/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
-        'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
+        'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --gazebo-models-dir "$GAZEBO_MODELS_DIR" --xtdrone-pythonpath "$XTDRONE_PYTHONPATH" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
         'start_communication "$XTDRONE_PYTHON" "$XTDRONE_DIR/communication/multirotor_communication.py" || return 1',
+    }
+)
+_CANONICAL_MANIFEST_RELATIVE = pathlib.PurePosixPath(
+    "src/competition_compliance/config/official_manifest.json"
+)
+_REQUIRED_OFFICIAL_IDENTITIES = frozenset(
+    {
+        ("PX4_DIR", "Tools/sitl_gazebo/models/typhoon_h480/typhoon_h480.sdf"),
+        ("PX4_DIR", "Tools/sitl_gazebo/worlds/robocup.world"),
+        ("PX4_DIR", "launch/single_vehicle_spawn_xtd.launch"),
+        ("PX4_DIR", "Tools/setup_gazebo.bash"),
+        ("PX4_DIR", "build/px4_sitl_default/bin/px4"),
+        ("XTDRONE_DIR", "sitl_config/models/typhoon_h480/typhoon_h480.sdf"),
+        ("XTDRONE_DIR", "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf"),
+        ("XTDRONE_DIR", "sitl_config/models/realsense_camera/realsense_camera.sdf"),
+        ("XTDRONE_DIR", "sitl_config/models/walker/walk_0.dae"),
+        ("XTDRONE_DIR", "communication/multirotor_communication.py"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.cc"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.hh"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/CMakeLists.txt"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/LICENSE"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/README.md"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/include/actor_plugin_ros/ActorPluginRos.hpp"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/package.xml"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/res/waving.dae"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/src/ActorPluginRos.cpp"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/CMakeLists.txt"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/msg/ActorInfo.msg"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/msg/ActorMotion.msg"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/package.xml"),
+        ("XTDRONE_DIR", "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/srv/ToggleActorWaving.srv"),
+        ("GAZEBO_MODELS_DIR", "cessna/model.sdf"),
+        ("XTDRONE_PYTHONPATH", "pyquaternion/__init__.py"),
     }
 )
 
@@ -149,6 +203,71 @@ def _repository_file(root, path, label):
     return resolved
 
 
+def canonical_manifest_path(root, manifest_path):
+    root = _resolve_root(root)
+    expected = root.joinpath(*_CANONICAL_MANIFEST_RELATIVE.parts)
+    declared = pathlib.Path(manifest_path)
+    if declared.is_absolute():
+        if declared != expected:
+            raise ComplianceError("必须使用仓库内唯一的规范官方清单：{}".format(expected))
+    else:
+        raw = pathlib.PurePosixPath(str(declared))
+        if raw.as_posix() != str(declared) or raw != _CANONICAL_MANIFEST_RELATIVE:
+            raise ComplianceError("必须使用仓库内唯一的规范官方清单：{}".format(expected))
+    _reject_symlink_components(root, _CANONICAL_MANIFEST_RELATIVE, "官方清单")
+    try:
+        resolved = expected.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ComplianceError("无法解析规范官方清单 {}：{}".format(expected, error)) from error
+    if resolved != expected or not resolved.is_file():
+        raise ComplianceError("规范官方清单不得为符号链接或别名：{}".format(expected))
+    return resolved
+
+
+def verify_required_manifest_identities(manifest):
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+        raise ComplianceError("官方清单 files 必须为数组")
+    identities = [(entry.get("root"), entry.get("path")) for entry in manifest["files"]]
+    identity_set = set(identities)
+    if len(identities) != len(identity_set):
+        raise ComplianceError("官方清单包含重复文件身份")
+    missing = sorted(_REQUIRED_OFFICIAL_IDENTITIES - identity_set)
+    extra = sorted(identity_set - _REQUIRED_OFFICIAL_IDENTITIES)
+    if missing or extra:
+        raise ComplianceError(
+            "规范官方清单身份集合不完整：缺少 {}，多余 {}".format(missing, extra)
+        )
+    return sorted(
+        (
+            {"root": entry["root"], "path": entry["path"], "sha256": entry["sha256"]}
+            for entry in manifest["files"]
+        ),
+        key=lambda item: (item["root"], item["path"]),
+    )
+
+
+def build_evidence(manifest_digest, manifest, actual_versions):
+    if not isinstance(manifest_digest, str) or not _HASH_PATTERN.fullmatch(
+        manifest_digest
+    ):
+        raise ComplianceError("规范官方清单 sha256 无效")
+    checked = verify_required_manifest_identities(manifest)
+    return {
+        "status": "pass",
+        "versions": actual_versions,
+        "manifest_sha256": manifest_digest,
+        "checked_identities": checked,
+        "checked_files": len(checked),
+        "critical_official_files_match": True,
+        "integrity_basis": (
+            "critical runtime hashes; PX4 archive Git metadata is not authoritative"
+        ),
+        "entrypoint_guard": (
+            "bubblewrap read-only runtime mounts; static entrypoint guard is supplemental"
+        ),
+    }
+
+
 def load_ownership(path):
     path = pathlib.Path(path)
     try:
@@ -172,9 +291,7 @@ def _validate_entry(entry):
     if not isinstance(entry, dict):
         raise ComplianceError("所有权条目必须为对象")
     kind = entry.get("kind")
-    expected_keys = _BASE_ENTRY_KEYS
-    if kind == "third-party" and "files" in entry:
-        expected_keys = _BASE_ENTRY_KEYS | {"files"}
+    expected_keys = _THIRD_PARTY_ENTRY_KEYS if kind == "third-party" else _BASE_ENTRY_KEYS
     if set(entry) != expected_keys:
         raise ComplianceError("所有权条目字段不符合 {} 类型要求".format(kind))
     if kind not in ("team", "third-party"):
@@ -184,15 +301,35 @@ def _validate_entry(entry):
         value = entry[key]
         if not isinstance(value, str) or not value.strip():
             raise ComplianceError("所有权条目 {} 必须为非空字符串：{}".format(key, entry["path"]))
-    files = entry.get("files")
-    if files is not None:
-        if not isinstance(files, dict) or not files:
-            raise ComplianceError("第三方 files 必须为非空哈希对象：{}".format(entry["path"]))
-        for path, digest in files.items():
-            _relative_path(path, "第三方文件路径")
-            if not isinstance(digest, str) or not _HASH_PATTERN.fullmatch(digest):
-                raise ComplianceError("第三方文件 sha256 无效：{}/{}".format(entry["path"], path))
+    if kind == "third-party":
+        package_version = entry["package_version"]
+        if not isinstance(package_version, str) or not package_version.strip():
+            raise ComplianceError("第三方 package_version 必须为非空字符串")
+        verification = entry["verification"]
+        if not isinstance(verification, dict):
+            raise ComplianceError("第三方 verification 必须为对象")
+        strategy = verification.get("strategy")
+        if strategy == "complete-hash-map":
+            if set(verification) != {"strategy", "files"}:
+                raise ComplianceError("complete-hash-map 只能包含 strategy 和 files")
+            files = verification["files"]
+            _validate_hash_map(entry["path"], files)
+        elif strategy == "external-tree":
+            if set(verification) != {"strategy", "external_path"}:
+                raise ComplianceError("external-tree 只能包含 strategy 和 external_path")
+            _relative_path(verification["external_path"], "第三方外部目录路径")
+        else:
+            raise ComplianceError("第三方 verification strategy 无效：{}".format(strategy))
     return relative
+
+
+def _validate_hash_map(package_path, files):
+    if not isinstance(files, dict) or not files:
+        raise ComplianceError("第三方 files 必须为非空哈希对象：{}".format(package_path))
+    for path, digest in files.items():
+        _relative_path(path, "第三方文件路径")
+        if not isinstance(digest, str) or not _HASH_PATTERN.fullmatch(digest):
+            raise ComplianceError("第三方文件 sha256 无效：{}/{}".format(package_path, path))
 
 
 def _walk_package_files(root):
@@ -237,7 +374,7 @@ def _normalized_license(value):
     return value
 
 
-def verify_ownership(root, ownership_path):
+def verify_ownership(root, ownership_path, xtdrone_dir=None):
     root = _resolve_root(root)
     ownership_file = _repository_file(root, ownership_path, "所有权清单")
     entries = load_ownership(ownership_file)
@@ -263,9 +400,11 @@ def verify_ownership(root, ownership_path):
     for entry, _relative, package_dir in validated:
         package_xml = package_dir / "package.xml"
         version, licenses = _package_metadata(package_xml)
-        if entry["kind"] == "team" or entry["source"].startswith("https://github.com/leggedrobotics/"):
-            if version != entry["version"]:
-                raise ComplianceError("所有权 version 与 package.xml 不一致：{}".format(entry["path"]))
+        expected_version = (
+            entry["version"] if entry["kind"] == "team" else entry["package_version"]
+        )
+        if version != expected_version:
+            raise ComplianceError("所有权 package version 与 package.xml 不一致：{}".format(entry["path"]))
         normalized_licenses = {_normalized_license(value) for value in licenses}
         if _normalized_license(entry["license"]) not in normalized_licenses:
             raise ComplianceError("所有权 license 与 package.xml 不一致：{}".format(entry["path"]))
@@ -273,14 +412,40 @@ def verify_ownership(root, ownership_path):
             metadata_text = package_xml.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise ComplianceError("无法读取 Catkin 包元数据 {}：{}".format(package_xml, error)) from error
-        if any(token in metadata_text for token in _PLACEHOLDER_TOKENS) or _COMMENTED_IDENTITY.search(metadata_text):
+        if (
+            any(token in metadata_text for token in _PLACEHOLDER_TOKENS)
+            or _COMMENTED_IDENTITY.search(metadata_text)
+            or _ZERO_DESCRIPTION.search(metadata_text)
+        ):
             raise ComplianceError("Catkin 包元数据仍含占位内容：{}".format(package_xml))
-        for file_path, expected in entry.get("files", {}).items():
-            file_relative = _relative_path(file_path, "第三方文件路径")
-            _reject_symlink_components(package_dir, file_relative, "第三方文件")
-            target = package_dir.joinpath(*file_relative.parts)
-            if not target.is_file() or sha256_file(target) != expected:
-                raise ComplianceError("第三方文件校验失败：{}".format(target))
+        if entry["kind"] == "third-party":
+            verification = entry["verification"]
+            if verification["strategy"] == "complete-hash-map":
+                package_root, actual_files = _tree_files(package_dir, "第三方包")
+                expected_files = set(verification["files"])
+                if actual_files != expected_files:
+                    raise ComplianceError(
+                        "第三方包文件集合不一致：{}".format(entry["path"])
+                    )
+                for file_path, expected in verification["files"].items():
+                    if sha256_file(package_root / file_path) != expected:
+                        raise ComplianceError(
+                            "第三方文件校验失败：{}".format(package_root / file_path)
+                        )
+            else:
+                if xtdrone_dir is None:
+                    raise ComplianceError("external-tree 策略缺少 XTDrone 目录")
+                external_root = _resolve_root(xtdrone_dir)
+                external_relative = _relative_path(
+                    verification["external_path"], "第三方外部目录路径"
+                )
+                _reject_symlink_components(
+                    external_root, external_relative, "第三方外部目录"
+                )
+                compare_trees(
+                    package_dir,
+                    external_root.joinpath(*external_relative.parts),
+                )
     return entries
 
 
@@ -359,6 +524,9 @@ def _shell_tokens(command):
 
 def has_official_reference(command):
     if _PROTECTED_VARIABLE.search(command):
+        return True
+    dequoted = command.replace('"', "").replace("'", "")
+    if _OFFICIAL_LITERAL_PATH.search(dequoted):
         return True
     try:
         tokens = shlex.split(command, comments=True, posix=True)
@@ -470,6 +638,39 @@ def _validate_official_shell_references(script_text, filename):
             )
 
 
+def _validate_disallowed_shell_constructs(script_text, filename):
+    for line_number, command in logical_shell_commands(script_text):
+        reason = None
+        if re.search(r"\$\{![^}]+\}", command):
+            reason = "间接变量展开"
+        elif "eval" in _shell_tokens(command):
+            reason = "eval"
+        elif re.search(r"\$\(\s*env\s+(?:PX4_DIR|XTDRONE_DIR)\s*\)", command):
+            reason = "官方目录环境替换"
+        elif "`" in command:
+            reason = "反引号命令替换"
+        if reason is not None:
+            raise ComplianceError(
+                "入口静态守卫拒绝{}：{}:{}：{}".format(
+                    reason, filename, line_number, command
+                )
+            )
+
+
+_ALLOWED_ROS_SUBSTITUTION = re.compile(
+    r"\$\((?:find|arg)\s+[A-Za-z_][A-Za-z0-9_]*\)"
+    r"|\$\(eval 1 \+ arg\('ID'\)\)"
+)
+
+
+def _validate_ros_substitutions(launch_text, launch_path):
+    remainder = _ALLOWED_ROS_SUBSTITUTION.sub("", launch_text)
+    if "$(" in remainder:
+        raise ComplianceError(
+            "比赛 launch 包含未经许可的 ROS 替换：{}".format(launch_path)
+        )
+
+
 def _validate_launch_official_references(launch_text, launch_path):
     try:
         launch_root = ET.fromstring(launch_text)
@@ -504,7 +705,9 @@ def verify_entrypoints(root):
     if "typhoon_h480_zzufly" in launch_text + script_text:
         raise ComplianceError("比赛启动入口仍引用调试模型 typhoon_h480_zzufly")
     _validate_bash_syntax(script_path)
+    _validate_ros_substitutions(launch_text, launch_path)
     _validate_launch_official_references(launch_text, launch_path)
+    _validate_disallowed_shell_constructs(script_text, "1.sh")
     for line_number, command in logical_shell_commands(script_text):
         if _is_symbolic_link_command(_shell_tokens(command)):
             raise ComplianceError(
@@ -526,7 +729,7 @@ def validate_evidence_path(root, evidence):
     else:
         relative_raw = pathlib.PurePosixPath(str(declared)).as_posix()
     relative = _relative_path(relative_raw, "合规证据路径")
-    if not relative.parts or relative.parts[0] != "competition-artifacts" or len(relative.parts) < 2:
+    if len(relative.parts) != 2 or relative.parts[0] != "competition-artifacts":
         raise ComplianceError("合规证据必须位于仓库 competition-artifacts 内")
     _reject_symlink_components(root, relative, "合规证据")
     target = root.joinpath(*relative.parts)
@@ -540,19 +743,98 @@ def validate_evidence_path(root, evidence):
     return resolved_target
 
 
-def write_evidence(path, payload):
-    path = pathlib.Path(path)
+def write_evidence(root, path, payload):
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, ensure_ascii=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-    except FileExistsError as error:
-        raise ComplianceError("合规证据已存在，拒绝覆盖：{}".format(path)) from error
+        serialized = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise ComplianceError("无法序列化合规证据：{}".format(error)) from error
+
+    root = _resolve_root(root)
+    path = validate_evidence_path(root, path)
+    root_fd = None
+    artifacts_fd = None
+    temporary_fd = None
+    temporary_name = None
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(str(root), directory_flags)
+        artifacts_created = False
+        try:
+            os.mkdir("competition-artifacts", mode=0o755, dir_fd=root_fd)
+            artifacts_created = True
+        except FileExistsError:
+            pass
+        artifacts_fd = os.open(
+            "competition-artifacts", directory_flags, dir_fd=root_fd
+        )
+        if artifacts_created:
+            os.fsync(root_fd)
+
+        for _attempt in range(16):
+            candidate = ".{}.tmp-{}".format(path.name, secrets.token_hex(8))
+            try:
+                temporary_fd = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=artifacts_fd,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+        if temporary_fd is None:
+            raise OSError(errno.EEXIST, "无法创建唯一的证据临时文件")
+
+        view = memoryview(serialized)
+        while view:
+            written = os.write(temporary_fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "写入合规证据时未取得进展")
+            view = view[written:]
+        os.fsync(temporary_fd)
+        os.close(temporary_fd)
+        temporary_fd = None
+
+        try:
+            os.link(
+                temporary_name,
+                path.name,
+                src_dir_fd=artifacts_fd,
+                dst_dir_fd=artifacts_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as error:
+            raise ComplianceError(
+                "合规证据已存在，拒绝覆盖：{}".format(path)
+            ) from error
+        os.unlink(temporary_name, dir_fd=artifacts_fd)
+        temporary_name = None
+        os.fsync(artifacts_fd)
+    except ComplianceError:
+        raise
     except OSError as error:
         raise ComplianceError("无法写入合规证据 {}：{}".format(path, error)) from error
+    finally:
+        if temporary_fd is not None:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+        if temporary_name is not None and artifacts_fd is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=artifacts_fd)
+                os.fsync(artifacts_fd)
+            except OSError:
+                pass
+        for descriptor in (artifacts_fd, root_fd):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def main():
@@ -560,6 +842,8 @@ def main():
     parser.add_argument("--root", required=True, type=pathlib.Path)
     parser.add_argument("--px4-dir", required=True, type=pathlib.Path)
     parser.add_argument("--xtdrone-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--gazebo-models-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--xtdrone-pythonpath", required=True, type=pathlib.Path)
     parser.add_argument("--manifest", required=True, type=pathlib.Path)
     parser.add_argument("--ownership", required=True, type=pathlib.Path)
     parser.add_argument("--evidence", required=True, type=pathlib.Path)
@@ -570,26 +854,26 @@ def main():
     if present:
         raise ComplianceError("clean 分支包含禁止目录：{}".format(", ".join(present)))
 
-    manifest = verify_manifest(
-        args.manifest,
-        {"PX4_DIR": args.px4_dir, "XTDRONE_DIR": args.xtdrone_dir},
+    manifest_path = canonical_manifest_path(root, args.manifest)
+    manifest, manifest_digest = load_manifest_with_digest(manifest_path)
+    manifest = verify_manifest_document(
+        manifest,
+        {
+            "PX4_DIR": args.px4_dir,
+            "XTDRONE_DIR": args.xtdrone_dir,
+            "GAZEBO_MODELS_DIR": args.gazebo_models_dir,
+            "XTDRONE_PYTHONPATH": args.xtdrone_pythonpath,
+        },
     )
+    verify_required_manifest_identities(manifest)
     actual_versions = verify_versions(manifest, args.xtdrone_dir)
-    verify_ownership(root, args.ownership)
-    compare_trees(
-        root / "src/gazebo_ros_actor_plugin",
-        args.xtdrone_dir / "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin",
-    )
+    verify_ownership(root, args.ownership, args.xtdrone_dir)
     verify_entrypoints(root)
     evidence_path = validate_evidence_path(root, args.evidence)
     write_evidence(
+        root,
         evidence_path,
-        {
-            "status": "pass",
-            "versions": actual_versions,
-            "checked_files": len(manifest["files"]),
-            "critical_official_files_match": True,
-        },
+        build_evidence(manifest_digest, manifest, actual_versions),
     )
     print("完整静态合规检查通过")
 

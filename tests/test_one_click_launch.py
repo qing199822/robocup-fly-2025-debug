@@ -31,6 +31,7 @@ class LauncherHarness:
         (self.workspace / "1.sh").write_text(
             (ROOT / "1.sh").read_text(encoding="utf-8"), encoding="utf-8"
         )
+        (self.workspace / "1.sh").chmod(0o755)
         self._create_required_files()
         self._create_command_stubs()
 
@@ -355,7 +356,7 @@ class LauncherHarness:
         result.stdout = output_path.read_text(encoding="utf-8")
         return result, time.monotonic() - started
 
-    def interrupt_during_setsid(self):
+    def interrupt_during_setsid(self, *, signal_process_group=False):
         launch_env = self.env.copy()
         launch_env["SETSID_MODE"] = "delay"
         output_path = self.state / "interrupt-output.txt"
@@ -368,6 +369,7 @@ class LauncherHarness:
                 stdout=output_file,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             deadline = time.monotonic() + 2
             marker = self.state / "setsid_called"
@@ -378,7 +380,10 @@ class LauncherHarness:
                 process.wait(timeout=1)
                 raise AssertionError("setsid stub was not reached")
             child_pid = int((self.state / "setsid_pids").read_text().splitlines()[-1])
-            os.kill(process.pid, signal.SIGTERM)
+            if signal_process_group:
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                os.kill(process.pid, signal.SIGTERM)
             timed_out = False
             try:
                 returncode = process.wait(timeout=2)
@@ -584,6 +589,8 @@ class OneClickLaunchTest(unittest.TestCase):
         for argument in (
             '--px4-dir "$PX4_DIR"',
             '--xtdrone-dir "$XTDRONE_DIR"',
+            '--gazebo-models-dir "$GAZEBO_MODELS_DIR"',
+            '--xtdrone-pythonpath "$XTDRONE_PYTHONPATH"',
             '--manifest "$OFFICIAL_MANIFEST"',
             '--mount-config "$SENSOR_MOUNT_CONFIG"',
             '--output "$GENERATED_MODEL"',
@@ -814,6 +821,19 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
 
     def test_signal_before_process_group_creation_has_no_leak(self):
         result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid()
+
+        self.assertFalse(timed_out, result.stdout)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        self.assertFalse(self.harness.run_tmp_exists())
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+
+    def test_terminal_process_group_signal_has_no_leak(self):
+        result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid(
+            signal_process_group=True
+        )
 
         self.assertFalse(timed_out, result.stdout)
         self.assertNotEqual(0, result.returncode, result.stdout)

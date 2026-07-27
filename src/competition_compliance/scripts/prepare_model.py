@@ -26,6 +26,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--px4-dir", required=True, type=pathlib.Path)
     parser.add_argument("--xtdrone-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--gazebo-models-dir", required=True, type=pathlib.Path)
+    parser.add_argument("--xtdrone-pythonpath", required=True, type=pathlib.Path)
     parser.add_argument("--manifest", required=True, type=pathlib.Path)
     parser.add_argument("--mount-config", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
@@ -34,7 +36,12 @@ def main():
     require_xmlstarlet()
     manifest = verify_manifest(
         args.manifest,
-        {"PX4_DIR": args.px4_dir, "XTDRONE_DIR": args.xtdrone_dir},
+        {
+            "PX4_DIR": args.px4_dir,
+            "XTDRONE_DIR": args.xtdrone_dir,
+            "GAZEBO_MODELS_DIR": args.gazebo_models_dir,
+            "XTDRONE_PYTHONPATH": args.xtdrone_pythonpath,
+        },
     )
     verify_versions(manifest, args.xtdrone_dir)
     pose = load_mount_pose(args.mount_config)

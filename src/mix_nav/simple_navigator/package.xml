@@ -2,7 +2,7 @@
 <package format="2">
   <name>simple_navigator</name>
   <version>0.1.0</version>
-  <description>0</description>
+  <description>Simple waypoint navigation and static transform support for the competition drones.</description>
 
   <!-- 维护者信息：请务必修改为您自己的信息 -->
   <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>

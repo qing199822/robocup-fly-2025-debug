@@ -53,27 +53,38 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def load_manifest(path):
-    path = pathlib.Path(path)
-    try:
-        data = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
-    except OSError as error:
-        raise ComplianceError("无法读取官方清单 {}：{}".format(path, error)) from error
-    except UnicodeError as error:
-        raise ComplianceError(
-            "官方清单不是有效的 UTF-8 文件 {}：{}".format(path, error)
-        ) from error
-    except json.JSONDecodeError as error:
-        raise ComplianceError("官方清单 JSON 格式错误 {}：{}".format(path, error)) from error
-
+def _validate_manifest_document(data):
     if not isinstance(data, dict) or set(data) != _MANIFEST_KEYS:
         raise ComplianceError("官方清单只能包含 files 和 versions")
     if not isinstance(data["files"], list) or not isinstance(data["versions"], dict):
         raise ComplianceError("官方清单格式无效：files 必须为数组，versions 必须为对象")
     _validate_versions(data["versions"])
+    _validate_manifest_files(data["files"])
     return data
+
+
+def load_manifest_with_digest(path):
+    path = pathlib.Path(path)
+    try:
+        encoded = path.read_bytes()
+    except OSError as error:
+        raise ComplianceError("无法读取官方清单 {}：{}".format(path, error)) from error
+    try:
+        text = encoded.decode("utf-8")
+    except UnicodeError as error:
+        raise ComplianceError(
+            "官方清单不是有效的 UTF-8 文件 {}：{}".format(path, error)
+        ) from error
+    try:
+        data = json.loads(text, object_pairs_hook=_unique_object)
+    except json.JSONDecodeError as error:
+        raise ComplianceError("官方清单 JSON 格式错误 {}：{}".format(path, error)) from error
+    return _validate_manifest_document(data), hashlib.sha256(encoded).hexdigest()
+
+
+def load_manifest(path):
+    manifest, _digest = load_manifest_with_digest(path)
+    return manifest
 
 
 def _validate_entry(entry):
@@ -84,6 +95,16 @@ def _validate_entry(entry):
         raise ComplianceError("官方文件条目 root 必须为非空字符串")
     if not isinstance(entry["path"], str) or not entry["path"]:
         raise ComplianceError("官方文件条目 path 必须为非空字符串")
+    if "\\" in entry["path"]:
+        raise ComplianceError("官方文件路径必须使用规范 POSIX 拼写：{}".format(entry["path"]))
+    relative = pathlib.PurePosixPath(entry["path"])
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.as_posix() != entry["path"]
+        or entry["path"] == "."
+    ):
+        raise ComplianceError("官方文件路径必须为规范相对路径：{}".format(entry["path"]))
     digest = entry["sha256"]
     if (
         not isinstance(digest, str)
@@ -91,10 +112,24 @@ def _validate_entry(entry):
         or any(character not in "0123456789abcdef" for character in digest)
     ):
         raise ComplianceError("官方文件条目 sha256 必须为 64 位小写十六进制字符串")
+    return entry["root"], entry["path"]
 
 
-def verify_manifest(path, roots):
-    manifest = load_manifest(path)
+def _validate_manifest_files(files):
+    if not files:
+        raise ComplianceError("官方清单 files 不得为空")
+    identities = set()
+    for entry in files:
+        identity = _validate_entry(entry)
+        if identity in identities:
+            raise ComplianceError(
+                "官方清单包含重复文件身份：{}/{}".format(*identity)
+            )
+        identities.add(identity)
+
+
+def verify_manifest_document(manifest, roots):
+    _validate_manifest_document(manifest)
     if not isinstance(roots, Mapping):
         raise ComplianceError("官方目录参数必须为 root 到目录的映射")
 
@@ -105,10 +140,6 @@ def verify_manifest(path, roots):
             raise ComplianceError("缺少官方目录参数：{}".format(root_name))
 
         relative = pathlib.PurePosixPath(entry["path"])
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ComplianceError(
-                "官方文件路径必须位于声明目录内：{}".format(entry["path"])
-            )
         try:
             declared_root = pathlib.Path(roots[root_name])
             resolved_root = declared_root.resolve(strict=True)
@@ -153,6 +184,10 @@ def verify_manifest(path, roots):
                 )
             )
     return manifest
+
+
+def verify_manifest(path, roots):
+    return verify_manifest_document(load_manifest(path), roots)
 
 
 def validate_output_path(output_path, roots):

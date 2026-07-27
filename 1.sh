@@ -65,6 +65,153 @@ LOGGER_REDIRECTED=false
 LOGGER_STARTED=false
 LOGGER_REAPED=false
 LOGGER_STATUS=0
+OFFICIAL_SANDBOX_CHILD_PID=""
+OFFICIAL_SANDBOX_PENDING_SIGNAL=""
+
+forward_official_sandbox_signal() {
+    local signal_name="$1"
+
+    OFFICIAL_SANDBOX_PENDING_SIGNAL="$signal_name"
+    if [ -n "$OFFICIAL_SANDBOX_CHILD_PID" ]; then
+        kill -s "$signal_name" "$OFFICIAL_SANDBOX_CHILD_PID" 2>/dev/null || true
+    fi
+}
+
+official_root_is_readonly_mount() {
+    local root="$1"
+    local mount_options
+
+    if [ ! -x /usr/bin/findmnt ]; then
+        return 1
+    fi
+    if ! mount_options="$(
+        /usr/bin/findmnt --noheadings --output OPTIONS --mountpoint "$root"
+    )"; then
+        return 1
+    fi
+    mount_options="${mount_options//[[:space:]]/}"
+    case ",$mount_options," in
+    *,ro,*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+ensure_official_readonly_sandbox() {
+    local bwrap_path resolved_px4 resolved_xtdrone
+    local status_dir status_fifo status_fd status_line status_deadline
+    local bwrap_pid sandbox_status
+
+    if [ "${ROBOCUP_OFFICIAL_ROOTS_READONLY:-}" = 1 ]; then
+        if ! official_root_is_readonly_mount "$PX4_DIR"; then
+            echo "错误：sandbox 标记无效，PX4_DIR 并非独立只读挂载：$PX4_DIR" >&2
+            return 1
+        fi
+        if ! official_root_is_readonly_mount "$XTDRONE_DIR"; then
+            echo "错误：sandbox 标记无效，XTDRONE_DIR 并非独立只读挂载：$XTDRONE_DIR" >&2
+            return 1
+        fi
+        return 0
+    fi
+    bwrap_path="$(command -v bwrap 2>/dev/null)"
+    if [ -z "$bwrap_path" ]; then
+        echo "错误：缺少 bubblewrap，无法保护 PX4/XTDrone 官方目录。请运行 sudo apt install bubblewrap 后重试。" >&2
+        return 1
+    fi
+    if [ ! -x /usr/bin/setsid ]; then
+        echo "错误：缺少 /usr/bin/setsid，无法安全转发 sandbox 信号。" >&2
+        return 1
+    fi
+    if [ ! -d "$PX4_DIR" ] || [ -L "$PX4_DIR" ]; then
+        echo "错误：PX4_DIR 必须是存在的普通目录且最终组件不能是符号链接：$PX4_DIR" >&2
+        return 1
+    fi
+    if [ ! -d "$XTDRONE_DIR" ] || [ -L "$XTDRONE_DIR" ]; then
+        echo "错误：XTDRONE_DIR 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_DIR" >&2
+        return 1
+    fi
+    if ! resolved_px4="$(cd "$PX4_DIR" && pwd -P)"; then
+        echo "错误：无法解析 PX4_DIR：$PX4_DIR" >&2
+        return 1
+    fi
+    if ! resolved_xtdrone="$(cd "$XTDRONE_DIR" && pwd -P)"; then
+        echo "错误：无法解析 XTDRONE_DIR：$XTDRONE_DIR" >&2
+        return 1
+    fi
+    PX4_DIR="$resolved_px4"
+    XTDRONE_DIR="$resolved_xtdrone"
+    PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
+    export PX4_DIR XTDRONE_DIR PX4_BUILD_DIR
+    export ROBOCUP_OFFICIAL_ROOTS_READONLY=1
+
+    if ! status_dir="$(mktemp -d /tmp/robocup-fly-bwrap.XXXXXX)"; then
+        echo "错误：无法创建 bubblewrap 状态目录。" >&2
+        return 1
+    fi
+    status_fifo="$status_dir/status.fifo"
+    if ! mkfifo "$status_fifo"; then
+        rmdir "$status_dir" 2>/dev/null || true
+        echo "错误：无法创建 bubblewrap 状态管道。" >&2
+        return 1
+    fi
+    if ! exec {status_fd}<>"$status_fifo"; then
+        rm -f -- "$status_fifo"
+        rmdir "$status_dir" 2>/dev/null || true
+        echo "错误：无法打开 bubblewrap 状态管道。" >&2
+        return 1
+    fi
+    rm -f -- "$status_fifo"
+    rmdir "$status_dir" 2>/dev/null || true
+
+    trap 'forward_official_sandbox_signal HUP' HUP
+    trap 'forward_official_sandbox_signal INT' INT
+    trap 'forward_official_sandbox_signal TERM' TERM
+    /usr/bin/setsid "$bwrap_path" \
+        --die-with-parent \
+        --json-status-fd "$status_fd" \
+        --dev-bind / / \
+        --ro-bind "$PX4_DIR" "$PX4_DIR" \
+        --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" \
+        "$SCRIPT_DIR/1.sh" "$@" &
+    bwrap_pid=$!
+
+    status_line=""
+    status_deadline=$((SECONDS + 5))
+    while [ -z "$status_line" ] && [ "$SECONDS" -lt "$status_deadline" ]; do
+        IFS= read -r -t 1 status_line <&"$status_fd" || true
+        if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+            break
+        fi
+    done
+    if [[ "$status_line" =~ \"child-pid\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+        OFFICIAL_SANDBOX_CHILD_PID="${BASH_REMATCH[1]}"
+    else
+        kill -TERM "$bwrap_pid" 2>/dev/null || true
+        wait "$bwrap_pid" 2>/dev/null || true
+        exec {status_fd}>&-
+        trap - HUP INT TERM
+        echo "错误：无法取得 bubblewrap 内层启动器 PID。" >&2
+        return 1
+    fi
+    if [ -n "$OFFICIAL_SANDBOX_PENDING_SIGNAL" ]; then
+        forward_official_sandbox_signal "$OFFICIAL_SANDBOX_PENDING_SIGNAL"
+    fi
+
+    while :; do
+        if wait "$bwrap_pid"; then
+            sandbox_status=0
+        else
+            sandbox_status=$?
+        fi
+        if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+            break
+        fi
+    done
+    exec {status_fd}>&-
+    trap - HUP INT TERM
+    OFFICIAL_SANDBOX_CHILD_PID=""
+    OFFICIAL_SANDBOX_PENDING_SIGNAL=""
+    exit "$sandbox_status"
+}
 
 current_milliseconds() {
     date +%s%3N
@@ -825,7 +972,7 @@ handle_exit() {
     local primary_status="$1"
     local cleanup_status logger_result final_status
 
-    trap - EXIT INT TERM
+    trap - EXIT HUP INT TERM
     cleanup
     cleanup_status=$?
     final_status="$primary_status"
@@ -846,7 +993,7 @@ handle_exit() {
 }
 
 on_interrupt() {
-    exit 130
+    exit "$1"
 }
 
 require_file() {
@@ -1121,6 +1268,8 @@ main() {
     if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" \
         --px4-dir "$PX4_DIR" \
         --xtdrone-dir "$XTDRONE_DIR" \
+        --gazebo-models-dir "$GAZEBO_MODELS_DIR" \
+        --xtdrone-pythonpath "$XTDRONE_PYTHONPATH" \
         --manifest "$OFFICIAL_MANIFEST" \
         --mount-config "$SENSOR_MOUNT_CONFIG" \
         --output "$GENERATED_MODEL" >/dev/null; then
@@ -1175,8 +1324,11 @@ main() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    ensure_official_readonly_sandbox "$@" || exit 1
     trap 'handle_exit $?' EXIT
-    trap on_interrupt INT TERM
+    trap 'on_interrupt 129' HUP
+    trap 'on_interrupt 130' INT
+    trap 'on_interrupt 143' TERM
     main "$@"
     exit $?
 fi

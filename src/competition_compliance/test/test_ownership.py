@@ -7,11 +7,15 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 OWNERSHIP = ROOT / "src/competition_compliance/config/ownership.json"
+OFFICIAL_MANIFEST = (
+    ROOT / "src/competition_compliance/config/official_manifest.json"
+)
 VERIFY_FULL = ROOT / "src/competition_compliance/scripts/verify_full.py"
 XTDRONE = ROOT.parents[2] / "XTDrone"
 ACTOR_SOURCE = (
@@ -100,8 +104,12 @@ class OwnershipDocumentTest(unittest.TestCase):
                 "kind": "third-party",
                 "source": "https://github.com/leggedrobotics/darknet_ros",
                 "version": "1.1.4",
+                "package_version": "1.1.4",
                 "license": "BSD",
-                "files": DARKNET_HASHES,
+                "verification": {
+                    "strategy": "complete-hash-map",
+                    "files": DARKNET_HASHES,
+                },
             },
             entries["src/darknet_ros_msgs"],
         )
@@ -109,14 +117,32 @@ class OwnershipDocumentTest(unittest.TestCase):
             "kind": "third-party",
             "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin",
             "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11",
+            "package_version": "1.0.0",
             "license": "Apache-2.0",
         }
-        for path in (
-            "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin",
-            "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs",
-        ):
+        actor_paths = {
+            "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin": (
+                "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/"
+                "gazebo_ros_actor_cmd_plugin"
+            ),
+            "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs": (
+                "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/"
+                "gazebo_ros_actor_cmd_plugin_msgs"
+            ),
+        }
+        for path, external_path in actor_paths.items():
             with self.subTest(path=path):
-                self.assertEqual({"path": path, **expected_actor}, entries[path])
+                self.assertEqual(
+                    {
+                        "path": path,
+                        **expected_actor,
+                        "verification": {
+                            "strategy": "external-tree",
+                            "external_path": external_path,
+                        },
+                    },
+                    entries[path],
+                )
 
     def test_no_package_metadata_contains_placeholders(self):
         tokens = (
@@ -127,6 +153,7 @@ class OwnershipDocumentTest(unittest.TestCase):
             "your-email",
             "your_email",
             "your.email",
+            "your-repo",
         )
         offenders = []
         for package_xml in (ROOT / "src").rglob("package.xml"):
@@ -136,6 +163,11 @@ class OwnershipDocumentTest(unittest.TestCase):
             if "<!-- <maintainer " in text or "<!-- <author " in text:
                 offenders.append(package_xml.relative_to(ROOT).as_posix())
         self.assertEqual([], sorted(set(offenders)))
+
+        simple_navigator = ET.parse(
+            str(ROOT / "src/mix_nav/simple_navigator/package.xml")
+        ).getroot()
+        self.assertNotEqual("0", simple_navigator.findtext("description").strip())
 
     def test_darknet_files_match_recorded_hashes(self):
         package = ROOT / "src/darknet_ros_msgs"
@@ -279,11 +311,21 @@ class OwnershipVerifierTest(unittest.TestCase):
             root = pathlib.Path(directory)
             package = self.write_package(root)
             (package / "official.txt").write_bytes(b"official")
+            package_digest = hashlib.sha256(
+                (package / "package.xml").read_bytes()
+            ).hexdigest()
             base = {
                 **self.team_entry(),
                 "kind": "third-party",
                 "source": "https://example.invalid/upstream",
-                "files": {"official.txt": digest},
+                "package_version": "1.2.3",
+                "verification": {
+                    "strategy": "complete-hash-map",
+                    "files": {
+                        "official.txt": digest,
+                        "package.xml": package_digest,
+                    },
+                },
             }
             ownership = self.write_ownership(root, {"entries": [base]})
             self.module.verify_ownership(root, ownership)
@@ -298,7 +340,18 @@ class OwnershipVerifierTest(unittest.TestCase):
             for files in invalid_files:
                 with self.subTest(files=files):
                     ownership = self.write_ownership(
-                        root, {"entries": [{**base, "files": files}]}
+                        root,
+                        {
+                            "entries": [
+                                {
+                                    **base,
+                                    "verification": {
+                                        "strategy": "complete-hash-map",
+                                        "files": files,
+                                    },
+                                }
+                            ]
+                        },
                     )
                     with self.assertRaises(self.module.ComplianceError):
                         self.module.verify_ownership(root, ownership)
@@ -306,10 +359,101 @@ class OwnershipVerifierTest(unittest.TestCase):
             (package / "alias.txt").symlink_to("official.txt")
             ownership = self.write_ownership(
                 root,
-                {"entries": [{**base, "files": {"alias.txt": digest}}]},
+                {
+                    "entries": [
+                        {
+                            **base,
+                            "verification": {
+                                "strategy": "complete-hash-map",
+                                "files": {"alias.txt": digest},
+                            },
+                        }
+                    ]
+                },
             )
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.verify_ownership(root, ownership)
+
+    def test_third_party_strategy_file_set_and_package_version_are_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            package = self.write_package(root)
+            package_hash = hashlib.sha256(
+                (package / "package.xml").read_bytes()
+            ).hexdigest()
+            base = {
+                **self.team_entry(),
+                "kind": "third-party",
+                "source": "https://example.invalid/upstream",
+                "package_version": "1.2.3",
+                "verification": {
+                    "strategy": "complete-hash-map",
+                    "files": {"package.xml": package_hash},
+                },
+            }
+            self.module.verify_ownership(
+                root, self.write_ownership(root, {"entries": [base]})
+            )
+
+            invalid = (
+                {key: value for key, value in base.items() if key != "verification"},
+                {key: value for key, value in base.items() if key != "package_version"},
+                {**base, "package_version": "9.9.9"},
+                {
+                    **base,
+                    "verification": {
+                        "strategy": "complete-hash-map",
+                        "files": {},
+                    },
+                },
+            )
+            for entry in invalid:
+                with self.subTest(entry=entry):
+                    ownership = self.write_ownership(root, {"entries": [entry]})
+                    with self.assertRaises(self.module.ComplianceError):
+                        self.module.verify_ownership(root, ownership)
+
+            (package / "extra.txt").write_text("extra", encoding="utf-8")
+            with self.assertRaisesRegex(self.module.ComplianceError, "文件集合"):
+                self.module.verify_ownership(
+                    root, self.write_ownership(root, {"entries": [base]})
+                )
+
+    def test_external_tree_strategy_compares_one_package_exactly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            root = temporary / "repository"
+            external = temporary / "XTDrone"
+            local_package = self.write_package(root)
+            external_package = self.write_package(
+                external, "upstream/example"
+            )
+            entry = {
+                **self.team_entry(),
+                "kind": "third-party",
+                "source": "XTDrone/upstream/example",
+                "package_version": "1.2.3",
+                "verification": {
+                    "strategy": "external-tree",
+                    "external_path": "upstream/example",
+                },
+            }
+            ownership = self.write_ownership(root, {"entries": [entry]})
+            self.module.verify_ownership(root, ownership, external)
+
+            (external_package / "extra.txt").write_text("extra", encoding="utf-8")
+            with self.assertRaisesRegex(self.module.ComplianceError, "文件集合"):
+                self.module.verify_ownership(root, ownership, external)
+
+            (external_package / "extra.txt").unlink()
+            (local_package / "package.xml").write_text(
+                (local_package / "package.xml")
+                .read_text(encoding="utf-8")
+                .replace("example", "changed", 1),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(self.module.ComplianceError, "内容不同"):
+                self.module.verify_ownership(root, ownership, external)
 
     def test_package_set_and_declared_metadata_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -325,6 +469,19 @@ class OwnershipVerifierTest(unittest.TestCase):
                     ownership = self.write_ownership(root, {"entries": [entry]})
                     with self.assertRaisesRegex(self.module.ComplianceError, field):
                         self.module.verify_ownership(root, ownership)
+
+            package_xml = root / "src/example/package.xml"
+            package_xml.write_text(
+                package_xml.read_text(encoding="utf-8").replace(
+                    "</package>", "<description> 0 </description></package>"
+                ),
+                encoding="utf-8",
+            )
+            ownership = self.write_ownership(
+                root, {"entries": [self.team_entry()]}
+            )
+            with self.assertRaisesRegex(self.module.ComplianceError, "占位"):
+                self.module.verify_ownership(root, ownership)
 
     def test_compare_trees_rejects_file_set_content_and_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -349,6 +506,76 @@ class OwnershipVerifierTest(unittest.TestCase):
             (right / "same").symlink_to(left / "same")
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.compare_trees(left, right)
+
+    def test_only_the_canonical_repository_manifest_is_accepted(self):
+        self.assertEqual(
+            OFFICIAL_MANIFEST.resolve(),
+            self.module.canonical_manifest_path(ROOT, OFFICIAL_MANIFEST),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            canonical = (
+                root
+                / "src/competition_compliance/config/official_manifest.json"
+            )
+            canonical.parent.mkdir(parents=True)
+            canonical.write_text("{}", encoding="utf-8")
+            alternate = root / "alternate.json"
+            alternate.write_text("{}", encoding="utf-8")
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_manifest_path(root, alternate)
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_manifest_path(
+                    root,
+                    root
+                    / "src/competition_compliance/config/../config/official_manifest.json",
+                )
+            canonical.unlink()
+            canonical.symlink_to(alternate)
+            with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
+                self.module.canonical_manifest_path(root, canonical)
+
+    def test_required_manifest_identity_set_is_exact(self):
+        manifest = json.loads(OFFICIAL_MANIFEST.read_text(encoding="utf-8"))
+        checked = self.module.verify_required_manifest_identities(manifest)
+        self.assertEqual(26, len(checked))
+        self.assertEqual(checked, sorted(checked, key=lambda item: (item["root"], item["path"])))
+
+        missing = {**manifest, "files": manifest["files"][:-1]}
+        with self.assertRaisesRegex(self.module.ComplianceError, "缺少"):
+            self.module.verify_required_manifest_identities(missing)
+        extra = {
+            **manifest,
+            "files": manifest["files"]
+            + [{"root": "PX4_DIR", "path": "extra", "sha256": "0" * 64}],
+        }
+        with self.assertRaisesRegex(self.module.ComplianceError, "多余"):
+            self.module.verify_required_manifest_identities(extra)
+
+    def test_evidence_binds_canonical_manifest_and_checked_identities(self):
+        manifest = json.loads(OFFICIAL_MANIFEST.read_text(encoding="utf-8"))
+        manifest_digest = sha256(OFFICIAL_MANIFEST)
+        with mock.patch.object(
+            self.module,
+            "sha256_file",
+            side_effect=AssertionError("evidence must not reread the manifest"),
+        ):
+            evidence = self.module.build_evidence(
+                manifest_digest, manifest, manifest["versions"]
+            )
+        self.assertEqual(manifest_digest, evidence["manifest_sha256"])
+        self.assertEqual(26, evidence["checked_files"])
+        self.assertEqual(26, len(evidence["checked_identities"]))
+        self.assertEqual(
+            evidence["checked_identities"],
+            sorted(
+                evidence["checked_identities"],
+                key=lambda item: (item["root"], item["path"]),
+            ),
+        )
+        self.assertIn("archive", evidence["integrity_basis"])
+        self.assertIn("supplemental", evidence["entrypoint_guard"])
+        self.assertTrue(evidence["critical_official_files_match"])
 
     @staticmethod
     def write_entrypoints(root, script_text, launch_text="<launch/>"):
@@ -438,6 +665,36 @@ class OwnershipVerifierTest(unittest.TestCase):
                     self.assertIn("1.sh:", message)
                     self.assertIn(command.splitlines()[0].split()[0], message)
 
+    def test_entrypoints_reject_dynamic_and_obfuscated_official_references(self):
+        unsafe_commands = (
+            'name=PX4_DIR\ncat "${!name}"\n',
+            'name=XTDRONE_DIR\neval "cat \\${$name}"\n',
+            'root="$(env PX4_DIR)"\ncat "$root/file"\n',
+            'root=`env XTDRONE_DIR`\ncat "$root/file"\n',
+            'root=PX4_"Firmware"/official\ntouch "$root"\n',
+            'root=XT"Drone"/official\ntouch "$root"\n',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for command in unsafe_commands:
+                with self.subTest(command=command):
+                    self.write_entrypoints(root, command)
+                    with self.assertRaises(self.module.ComplianceError):
+                        self.module.verify_entrypoints(root)
+
+    def test_launch_rejects_unrecognized_ros_substitutions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self.write_entrypoints(
+                root,
+                "#!/bin/bash\n",
+                '<launch><arg name="unsafe" default="$(env PX4_DIR)"/></launch>',
+            )
+            with self.assertRaisesRegex(
+                self.module.ComplianceError, "ROS.*替换"
+            ):
+                self.module.verify_entrypoints(root)
+
     def test_entrypoints_reject_invalid_bash_syntax(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -479,32 +736,60 @@ class OwnershipVerifierTest(unittest.TestCase):
             self.assertEqual(
                 valid.resolve(), self.module.validate_evidence_path(root, valid)
             )
-            for invalid in (root / "result.json", artifacts / "../result.json"):
+            for invalid in (
+                root / "result.json",
+                artifacts / "../result.json",
+                artifacts / "nested/result.json",
+            ):
                 with self.subTest(invalid=invalid):
                     with self.assertRaises(self.module.ComplianceError):
                         self.module.validate_evidence_path(root, invalid)
 
-            outside = root / "outside"
-            outside.mkdir()
-            (artifacts / "linked").symlink_to(outside, target_is_directory=True)
+            outside = root / "outside.json"
+            outside.write_text("outside", encoding="utf-8")
+            (artifacts / "linked.json").symlink_to(outside)
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
-                self.module.validate_evidence_path(
-                    root, artifacts / "linked/result.json"
-                )
+                self.module.validate_evidence_path(root, artifacts / "linked.json")
 
     def test_write_evidence_is_exclusive_and_wraps_os_errors(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "evidence.json"
+            root = pathlib.Path(directory)
+            path = root / "competition-artifacts/evidence.json"
             payload = {"status": "pass"}
-            self.module.write_evidence(path, payload)
+            with mock.patch.object(
+                self.module.os, "fsync", wraps=self.module.os.fsync
+            ) as fsync:
+                self.module.write_evidence(root, path, payload)
+            self.assertGreaterEqual(fsync.call_count, 3)
             self.assertEqual(payload, json.loads(path.read_text(encoding="utf-8")))
             with self.assertRaisesRegex(self.module.ComplianceError, "已存在"):
-                self.module.write_evidence(path, payload)
-            with mock.patch.object(pathlib.Path, "open", side_effect=OSError("denied")):
+                self.module.write_evidence(root, path, {"status": "changed"})
+            self.assertEqual(payload, json.loads(path.read_text(encoding="utf-8")))
+
+            failed = root / "competition-artifacts/failed.json"
+            with mock.patch.object(
+                self.module.os, "write", side_effect=OSError("denied")
+            ):
                 with self.assertRaisesRegex(self.module.ComplianceError, "无法写入"):
-                    self.module.write_evidence(
-                        pathlib.Path(directory) / "other.json", payload
-                    )
+                    self.module.write_evidence(root, failed, payload)
+            self.assertFalse(failed.exists())
+            self.assertEqual(
+                [],
+                list((root / "competition-artifacts").glob(".*.tmp-*")),
+            )
+
+    def test_evidence_rejects_artifact_directory_symlink_swap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            (root / "competition-artifacts").symlink_to(
+                outside, target_is_directory=True
+            )
+            final = root / "competition-artifacts/result.json"
+            with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
+                self.module.write_evidence(root, final, {"status": "pass"})
+            self.assertEqual([], list(outside.iterdir()))
 
 
 if __name__ == "__main__":

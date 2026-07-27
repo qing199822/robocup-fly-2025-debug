@@ -14,18 +14,22 @@
       "kind": "third-party",
       "source": "https://github.com/leggedrobotics/darknet_ros",
       "version": "1.1.4",
+      "package_version": "1.1.4",
       "license": "BSD",
-      "files": {
-        "CHANGELOG.rst": "c8f43f5497a4eafb3ca7a7b54bfae89688b419bf2d812a99466c16ac11313162",
-        "CMakeLists.txt": "d8e46f9796c1e90ffc00a9c4ec73c8756504a779f099cbcad5549697b44fa100",
-        "action/CheckForObjects.action": "a8bff28a58a021bcd4ed5e287de25b5cf6e4658fbb6bdc541f921e9dc30d94a4",
-        "msg/BoundingBox.msg": "de8460e46657313444a294f1b03db298207e5f17ab92eca2c2b59cd25c51aeea",
-        "msg/BoundingBoxes.msg": "efabf37197aba12ff013899a75c89b7a3aeb36ed3bda4c0d6e791b68d42ae4a0",
-        "msg/ObjectCount.msg": "39f220042beeea9ee2138e3439a5d7d4cecd36d80a2a8aa97320964e29c44ea5",
-        "package.xml": "e7c9ac183ed43f7964e735dd52915bae0d7807b86f180f58aee8ba2750e89071"
+      "verification": {
+        "strategy": "complete-hash-map",
+        "files": {
+          "CHANGELOG.rst": "c8f43f5497a4eafb3ca7a7b54bfae89688b419bf2d812a99466c16ac11313162",
+          "CMakeLists.txt": "d8e46f9796c1e90ffc00a9c4ec73c8756504a779f099cbcad5549697b44fa100",
+          "action/CheckForObjects.action": "a8bff28a58a021bcd4ed5e287de25b5cf6e4658fbb6bdc541f921e9dc30d94a4",
+          "msg/BoundingBox.msg": "de8460e46657313444a294f1b03db298207e5f17ab92eca2c2b59cd25c51aeea",
+          "msg/BoundingBoxes.msg": "efabf37197aba12ff013899a75c89b7a3aeb36ed3bda4c0d6e791b68d42ae4a0",
+          "msg/ObjectCount.msg": "39f220042beeea9ee2138e3439a5d7d4cecd36d80a2a8aa97320964e29c44ea5",
+          "package.xml": "e7c9ac183ed43f7964e735dd52915bae0d7807b86f180f58aee8ba2750e89071"
+        }
       }
     },
-    {"path": "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin", "kind": "third-party", "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin", "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11", "license": "Apache-2.0"},
-    {"path": "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs", "kind": "third-party", "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin", "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11", "license": "Apache-2.0"}
+    {"path": "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin", "kind": "third-party", "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin", "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11", "package_version": "1.0.0", "license": "Apache-2.0", "verification": {"strategy": "external-tree", "external_path": "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin"}},
+    {"path": "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs", "kind": "third-party", "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin", "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11", "package_version": "1.0.0", "license": "Apache-2.0", "verification": {"strategy": "external-tree", "external_path": "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs"}}
   ]
 }

@@ -14,6 +14,7 @@ from unittest import mock
 from competition_compliance.manifest import (
     collect_versions,
     load_manifest,
+    load_manifest_with_digest,
     sha256_file,
     validate_output_path,
     verify_manifest,
@@ -145,6 +146,35 @@ EXPECTED_OFFICIAL_MANIFEST["files"].extend(
         ),
     )
 )
+EXPECTED_OFFICIAL_MANIFEST["files"].extend(
+    (
+        {
+            "root": "PX4_DIR",
+            "path": "Tools/setup_gazebo.bash",
+            "sha256": "20f6f1c974aa6ad876b77608f7bbfc1f30219e5fb9c7e6af0f5ba0c3016889e0",
+        },
+        {
+            "root": "PX4_DIR",
+            "path": "build/px4_sitl_default/bin/px4",
+            "sha256": "a20d61834431c521275f7d97c7c6efaab773fdb77541e78513bde54e97074be2",
+        },
+        {
+            "root": "XTDRONE_DIR",
+            "path": "sitl_config/models/walker/walk_0.dae",
+            "sha256": "4dea2476b652a575cbed75ee2537f80d08cc1ccdf923d6055cdf6fd83dc88665",
+        },
+        {
+            "root": "GAZEBO_MODELS_DIR",
+            "path": "cessna/model.sdf",
+            "sha256": "723beb85db3b6efd59f5c72f19245cbea60a05ed2f947b9ddb1913cdb052f8e9",
+        },
+        {
+            "root": "XTDRONE_PYTHONPATH",
+            "path": "pyquaternion/__init__.py",
+            "sha256": "e0ba598f61b4531f0bff1a2bf1740280e950a071cd4b96525bdac02cb46c745c",
+        },
+    )
+)
 
 
 def load_prepare_model_module():
@@ -249,6 +279,24 @@ class ManifestTest(unittest.TestCase):
                     with self.assertRaises(ComplianceError):
                         load_manifest(manifest)
 
+    def test_manifest_rejects_empty_files_and_duplicate_identities(self):
+        duplicate = {
+            "root": "ROOT",
+            "path": "official.txt",
+            "sha256": "0" * 64,
+        }
+        invalid_documents = (
+            {"versions": TEST_VERSIONS, "files": []},
+            {"versions": TEST_VERSIONS, "files": [duplicate, duplicate.copy()]},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for document in invalid_documents:
+                with self.subTest(document=document):
+                    manifest = self.write_manifest(root, document)
+                    with self.assertRaises(ComplianceError):
+                        load_manifest(manifest)
+
     def test_manifest_rejects_duplicate_keys_at_every_object_level(self):
         versions_json = json.dumps(TEST_VERSIONS)
         digest = "0" * 64
@@ -320,6 +368,8 @@ class ManifestTest(unittest.TestCase):
             {"root": "ROOT", "path": "official.txt", "sha256": "short"},
             {"root": "ROOT", "path": "/official.txt", "sha256": digest},
             {"root": "ROOT", "path": "safe/../official.txt", "sha256": digest},
+            {"root": "ROOT", "path": "./official.txt", "sha256": digest},
+            {"root": "ROOT", "path": "safe//official.txt", "sha256": digest},
         )
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -577,6 +627,9 @@ class ManifestTest(unittest.TestCase):
 
     def test_repository_manifest_matches_official_inputs_exactly(self):
         self.assertEqual(EXPECTED_OFFICIAL_MANIFEST, load_manifest(OFFICIAL_MANIFEST))
+        manifest, digest = load_manifest_with_digest(OFFICIAL_MANIFEST)
+        self.assertEqual(EXPECTED_OFFICIAL_MANIFEST, manifest)
+        self.assertEqual(hashlib.sha256(OFFICIAL_MANIFEST.read_bytes()).hexdigest(), digest)
 
     def test_prepare_cli_reports_compliance_failure_and_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -588,6 +641,10 @@ class ManifestTest(unittest.TestCase):
                     "--px4-dir",
                     str(root),
                     "--xtdrone-dir",
+                    str(root),
+                    "--gazebo-models-dir",
+                    str(root),
+                    "--xtdrone-pythonpath",
                     str(root),
                     "--manifest",
                     str(root / "missing.json"),
@@ -620,6 +677,10 @@ class ManifestTest(unittest.TestCase):
                     "--px4-dir",
                     str(root),
                     "--xtdrone-dir",
+                    str(root),
+                    "--gazebo-models-dir",
+                    str(root),
+                    "--xtdrone-pythonpath",
                     str(root),
                     "--manifest",
                     str(root / "missing.json"),
