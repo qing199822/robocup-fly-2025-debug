@@ -17,6 +17,7 @@ child_pids=()
 child_start_times=()
 cleanup_started=0
 pending_signal_status=0
+startup_complete=0
 
 read_start_time() {
     local pid="$1"
@@ -56,6 +57,17 @@ record_signal() {
     fi
 }
 
+handle_signal() {
+    local status="$1"
+    if [ "$startup_complete" -eq 0 ]; then
+        record_signal "$status"
+        return
+    fi
+    trap '' TERM INT HUP
+    stop_and_wait_for_children
+    exit "$status"
+}
+
 stop_and_wait_for_children() {
     if [ "$cleanup_started" -eq 1 ]; then
         return
@@ -91,9 +103,9 @@ stop_and_wait_for_children() {
     wait "$watchdog_pid" 2>/dev/null || true
 }
 
-trap 'record_signal 143' TERM
-trap 'record_signal 130' INT
-trap 'record_signal 129' HUP
+trap 'handle_signal 143' TERM
+trap 'handle_signal 130' INT
+trap 'handle_signal 129' HUP
 
 while(( $vehicle_num< typhoon_h480_num))
 do
@@ -111,6 +123,12 @@ do
         exit "$pending_signal_status"
     fi
 done
+
+startup_complete=1
+if [ "$pending_signal_status" -ne 0 ]; then
+    stop_and_wait_for_children
+    exit "$pending_signal_status"
+fi
 
 wait -n "${child_pids[@]}"
 returncode=$?

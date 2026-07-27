@@ -237,6 +237,41 @@ class YoloHelperLifecycleTest(unittest.TestCase):
     def test_hup_during_middle_worker_registration_leaves_no_worker(self):
         self._assert_signal_during_registration_is_clean("HUP", 2, 129)
 
+    def test_term_at_wait_boundary_cleans_all_six_workers(self):
+        bash_env = self.root / "wait-boundary-bash-env"
+        marker = self.state / "wait-boundary-reached"
+        bash_env.write_text(
+            textwrap.dedent(
+                """\
+                wait() {
+                    if [ "$1" = -n ] && [ ! -f "$FAKE_WAIT_BOUNDARY_MARKER" ]; then
+                        touch "$FAKE_WAIT_BOUNDARY_MARKER"
+                        builtin kill -TERM "$$"
+                    fi
+                    builtin wait "$@"
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+        self._start(
+            BASH_ENV=str(bash_env),
+            FAKE_WAIT_BOUNDARY_MARKER=str(marker),
+        )
+
+        returncode = self.process.wait(timeout=3)
+        launched = [
+            int(value)
+            for value in (self.state / "launched-pids").read_text().splitlines()
+        ]
+
+        self.assertTrue(marker.exists())
+        self.assertEqual(143, returncode)
+        self.assertEqual(6, len(launched))
+        for pid in launched:
+            with self.assertRaises(ProcessLookupError, msg=f"worker {pid} leaked"):
+                os.kill(pid, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
