@@ -420,6 +420,68 @@ class LauncherHarness:
         )
         return result, time.monotonic() - started, timed_out, child_pid
 
+    def interrupt_with_live_detached_child(self):
+        launch_env = self.env.copy()
+        launch_env.update(
+            {
+                "SIMULATION_MODE": "detached_child",
+                "MISSION_MODE": "sleep",
+                "MISSION_DURATION": "30",
+            }
+        )
+        output_path = self.state / "detached-interrupt-output.txt"
+        started = time.monotonic()
+        with output_path.open("w", encoding="utf-8") as output_file:
+            process = subprocess.Popen(
+                ["bash", str(self.workspace / "1.sh"), "6", "mission_down.json"],
+                cwd=self.workspace,
+                env=launch_env,
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                detached_marker = self.state / "detached_child_pids"
+                mission_marker = self.state / "mission_started"
+                deadline = time.monotonic() + 5
+                while (
+                    (not detached_marker.exists() or not mission_marker.exists())
+                    and time.monotonic() < deadline
+                ):
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.01)
+                if not detached_marker.exists() or not mission_marker.exists():
+                    raise AssertionError("launcher did not reach the live mission state")
+
+                detached_pid = int(detached_marker.read_text().strip())
+                detached_pgid = os.getpgid(detached_pid)
+                detached_sid = os.getsid(detached_pid)
+                os.kill(process.pid, signal.SIGINT)
+                returncode = process.wait(timeout=5)
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1)
+                raise
+        result = subprocess.CompletedProcess(
+            process.args,
+            returncode,
+            output_path.read_text(encoding="utf-8"),
+        )
+        return (
+            result,
+            time.monotonic() - started,
+            detached_pid,
+            detached_pgid,
+            detached_sid,
+        )
+
     def run_tmp_exists(self):
         marker = self.state / "run_tmp"
         return marker.exists() and pathlib.Path(marker.read_text().strip()).exists()
@@ -939,6 +1001,49 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
             os.kill(detached_pid, 0)
         self.assertEqual([], self.harness.recorded_processes_still_exist())
         self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_ctrl_c_cleans_detached_owned_child_but_preserves_unrelated_session(self):
+        unrelated = subprocess.Popen(
+            ["/usr/bin/setsid", "/bin/sleep", "30"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                if (
+                    os.getpgid(unrelated.pid) == unrelated.pid
+                    and os.getsid(unrelated.pid) == unrelated.pid
+                ):
+                    break
+                time.sleep(0.01)
+            self.assertEqual(unrelated.pid, os.getpgid(unrelated.pid))
+            self.assertEqual(unrelated.pid, os.getsid(unrelated.pid))
+
+            result, elapsed, detached_pid, detached_pgid, detached_sid = (
+                self.harness.interrupt_with_live_detached_child()
+            )
+
+            self.assertEqual(detached_pid, detached_pgid)
+            self.assertEqual(detached_pid, detached_sid)
+            self.assertEqual(130, result.returncode, result.stdout)
+            self.assertLess(elapsed, 5, result.stdout)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(detached_pid, 0)
+            self.assertEqual([], self.harness.recorded_processes_still_exist())
+            self.assertFalse(self.harness.run_tmp_exists())
+            self.assertIsNone(
+                unrelated.poll(), "launcher cleanup terminated an unrelated session"
+            )
+        finally:
+            if unrelated.poll() is None:
+                unrelated.terminate()
+                try:
+                    unrelated.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    unrelated.kill()
+                    unrelated.wait(timeout=1)
 
 
 if __name__ == "__main__":
