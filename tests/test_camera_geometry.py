@@ -273,6 +273,19 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         self.assertIn("rospy.logfatal", loader)
         self.assertNotIn("~camera_frame", self.source)
 
+    def test_transform_listener_owns_static_tf_and_robot_dynamic_tf_stays_manual(self):
+        initializer = self.function_source("__init__")
+        subscriptions = self.function_source("_setup_subscriptions")
+
+        self.assertIn(
+            "tf2_ros.TransformListener(self.transform_buffer)", initializer
+        )
+        self.assertNotIn('"/tf_static"', subscriptions)
+        self.assertNotIn("_tf_static_callback", self.source)
+        self.assertIn('f"/{self.robot_name}/tf"', subscriptions)
+        self.assertIn("TFMessage", subscriptions)
+        self.assertIn("self._tf_callback", subscriptions)
+
     def test_node_keeps_latest_valid_camera_info_when_invalid_message_arrives(self):
         setup = self.function_source("_setup_subscriptions")
         callback = self.function_source("_camera_info_callback")

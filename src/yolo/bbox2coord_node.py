@@ -116,7 +116,6 @@ class CoordinateEstimator:
         """設置所有的ROS訂閱者。"""
         # TF 訊息訂閱
         rospy.Subscriber(f"/{self.robot_name}/tf", TFMessage, self._tf_callback)
-        rospy.Subscriber("/tf_static", TFMessage, self._tf_static_callback)
 
         # 感測器和檢測結果訂閱
         rospy.Subscriber(f"/{self.robot_name}/realsense/depth_camera/depth/image_raw", Image, self._depth_image_callback, queue_size=1)
@@ -138,11 +137,6 @@ class CoordinateEstimator:
         """處理動態TF變換訊息。"""
         for transform in tf_message.transforms:
             self.transform_buffer.set_transform(transform, "default_authority")
-
-    def _tf_static_callback(self, tf_message):
-        """處理靜態TF變換訊息。"""
-        for transform in tf_message.transforms:
-            self.transform_buffer.set_transform_static(transform, "default_authority")
 
     def _camera_info_callback(self, message):
         """只保留完整且可用的官方相機標定。"""

@@ -2,7 +2,7 @@
   <arg name="mount_config" default="$(find competition_compliance)/config/sensor_mount.yaml" />
 
   <node pkg="competition_compliance" type="sensor_tf_publisher.py"
-        name="competition_sensor_tf" output="screen">
+        name="competition_sensor_tf" output="screen" required="true">
     <param name="mount_config" value="$(arg mount_config)" />
   </node>
 </launch>

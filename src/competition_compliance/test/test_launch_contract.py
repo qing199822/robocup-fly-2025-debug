@@ -15,6 +15,7 @@ SINGLE_LAUNCH = (
     / "src/competition_compliance/launch/single_vehicle_spawn_clean.launch"
 )
 PACKAGE_XML = WORKSPACE / "src/competition_compliance/package.xml"
+LOOK_UP_PACKAGE_XML = WORKSPACE / "src/look_up/package.xml"
 STATIC_TF_LAUNCH = WORKSPACE / "src/mix_nav/simple_navigator/launch/static_tf.launch"
 DOWN_RESUME_LAUNCH = WORKSPACE / "src/look_up/launch/down_resume.launch"
 SENSOR_TF_LAUNCH = WORKSPACE / "src/competition_compliance/launch/sensor_tf.launch"
@@ -304,6 +305,15 @@ class PackageMetadataContractTest(unittest.TestCase):
         self.assertTrue({"roslaunch", "gazebo_ros", "px4"}.issubset(dependencies))
         self.assertNotIn("xmlstarlet", dependencies)
 
+    def test_look_up_declares_sensor_tf_launch_runtime_dependency_once(self):
+        root = ET.parse(str(LOOK_UP_PACKAGE_XML)).getroot()
+        dependencies = [
+            element
+            for element in root.findall("./exec_depend")
+            if (element.text or "").strip() == "competition_compliance"
+        ]
+        self.assertEqual(1, len(dependencies))
+
 
 class SensorTransformLaunchContractTest(unittest.TestCase):
     def test_legacy_static_tf_keeps_only_world_frame_transforms(self):
@@ -355,6 +365,7 @@ class SensorTransformLaunchContractTest(unittest.TestCase):
                 "type": "sensor_tf_publisher.py",
                 "name": "competition_sensor_tf",
                 "output": "screen",
+                "required": "true",
             },
             nodes[0].attrib,
         )
