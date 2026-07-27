@@ -79,7 +79,6 @@ rosnode list | sort
 - `/yolo11n_pedestrian_detector_typhoon_h480_N`
 - `/coordinate_estimator_node_typhoon_h480_N`
 - `/typhoon_h480_N/tracking_node`
-- `/gimbal_control_typhoon_h480_N`
 - `/waypoint_navigator_typhoon_h480_N`
 
 ## MAVROS 连接失败
@@ -173,4 +172,4 @@ git -C "${XTDRONE_DIR:-../XTDrone}" status --short
 
 ## 测试说明
 
-项目自身的导航、任务、启动和图形环境测试应通过。`src/gazebo_ros_pkgs` 带有完整上游 Gazebo 测试套件；其中部分测试依赖额外权限、独占端口或专用场景，不适合作为本项目的单次验收标准。提交修改时至少运行 README 中列出的项目测试，并注明未运行的集成测试。
+项目自身的导航、任务、启动和图形环境测试应通过。完整验收以 `scripts/verify_competition_clean.sh` 为准；其中包含官方 Actor collision 插件的工作区外构建、静态边界检查和构建后复核。提交问题时附上命令、版本、退出码和相关日志，不要用修改官方目录的方式绕过失败。
