@@ -10,7 +10,7 @@ import re
 import sys
 
 # 訊息類型
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 from geometry_msgs.msg import PointStamped, TransformStamped
 from nav_msgs.msg import Odometry
@@ -20,6 +20,7 @@ from actor_msgs.msg import ActorInfo
 
 # 工具
 from cv_bridge import CvBridge
+from camera_geometry import deproject_pixel, timestamps_within
 
 class CoordinateEstimator:
     """
@@ -39,6 +40,8 @@ class CoordinateEstimator:
         # 2. 工具和狀態變數
         self.cv_bridge = CvBridge()
         self.latest_depth_frame = None
+        self.latest_depth_stamp = None
+        self.latest_camera_info = None
         self.active_tracking_id = None
         self.last_tracking_update_time = rospy.Time(0)
         
@@ -68,13 +71,20 @@ class CoordinateEstimator:
         rospy.loginfo("座標估算器初始化完成，等待訊息...")
 
     def _load_ros_params(self):
-        """從參數伺服器載入相機內參和座標系名稱。"""
-        self.camera_frame_id = rospy.get_param("~camera_frame", "camera_optical_link")
+        """從參數伺服器載入時間限制和座標系名稱。"""
+        self.camera_frame_override = rospy.get_param("~camera_frame", "")
         self.target_frame_id = rospy.get_param("~target_frame", "ground_plane")
-        self.cam_fx = rospy.get_param("~fx", 205.47)
-        self.cam_fy = rospy.get_param("~fy", 205.47)
-        self.cam_cx = rospy.get_param("~cx", 320)
-        self.cam_cy = rospy.get_param("~cy", 240)
+        configured_sensor_delta = rospy.get_param("~maximum_sensor_delta", 0.15)
+        try:
+            self.maximum_sensor_delta = float(configured_sensor_delta)
+        except (TypeError, ValueError, OverflowError) as error:
+            message = "~maximum_sensor_delta 必須是有限的非負數。"
+            rospy.logfatal(message)
+            raise ValueError(message) from error
+        if not math.isfinite(self.maximum_sensor_delta) or self.maximum_sensor_delta < 0:
+            message = "~maximum_sensor_delta 必須是有限的非負數。"
+            rospy.logfatal(message)
+            raise ValueError(message)
         self.tracking_timeout_duration = rospy.Duration(rospy.get_param("~tracking_timeout", 1.0))
 
     def _create_actor_publishers(self):
@@ -94,6 +104,12 @@ class CoordinateEstimator:
 
         # 感測器和檢測結果訂閱
         rospy.Subscriber(f"/{self.robot_name}/realsense/depth_camera/depth/image_raw", Image, self._depth_image_callback, queue_size=1)
+        rospy.Subscriber(
+            f"/{self.robot_name}/realsense/depth_camera/color/camera_info",
+            CameraInfo,
+            self._camera_info_callback,
+            queue_size=1,
+        )
         rospy.Subscriber(f"/{self.robot_name}/yolo11n/bounding_boxes", BoundingBoxes, self.bounding_box_callback, queue_size=1)
         
         # 追踪狀態訂閱
@@ -112,13 +128,37 @@ class CoordinateEstimator:
         for transform in tf_message.transforms:
             self.transform_buffer.set_transform_static(transform, "default_authority")
 
+    def _camera_info_callback(self, message):
+        """只保留完整且可用的官方相機標定。"""
+        self.latest_camera_info = None
+        try:
+            matrix_is_valid = (
+                len(message.K) == 9
+                and all(math.isfinite(float(value)) for value in message.K)
+                and float(message.K[0]) > 0.0
+                and float(message.K[4]) > 0.0
+            )
+            dimensions_are_valid = message.width > 0 and message.height > 0
+            frame_is_valid = bool(message.header.frame_id)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            matrix_is_valid = False
+            dimensions_are_valid = False
+            frame_is_valid = False
+
+        if not (matrix_is_valid and dimensions_are_valid and frame_is_valid):
+            rospy.logwarn_throttle(2, "CameraInfo 無效，清除舊標定並跳過處理。")
+            return
+        self.latest_camera_info = message
+
     def _depth_image_callback(self, image_msg):
         """將ROS Image訊息轉換為OpenCV格式並儲存。"""
         try:
             self.latest_depth_frame = self.cv_bridge.imgmsg_to_cv2(image_msg, desired_encoding="passthrough")
+            self.latest_depth_stamp = image_msg.header.stamp
         except Exception as e:
             rospy.logwarn(f"深度圖像轉換失敗: {e}")
             self.latest_depth_frame = None
+            self.latest_depth_stamp = None
 
     def _tracking_status_callback(self, status_msg):
         """解析並更新當前追踪的目標ID。"""
@@ -136,9 +176,38 @@ class CoordinateEstimator:
         """
         處理檢測到的邊界框的主回呼函數。
         """
-        if self.latest_depth_frame is None:
-            rospy.logwarn_throttle(2, "深度圖像尚未接收，跳過處理。")
+        if (
+            self.latest_depth_frame is None
+            or self.latest_depth_stamp is None
+            or self.latest_camera_info is None
+        ):
+            rospy.logwarn_throttle(2, "深度圖、深度時間戳或 CameraInfo 尚未接收，跳過處理。")
             return
+
+        depth_height, depth_width = self.latest_depth_frame.shape[:2]
+        if (
+            self.latest_camera_info.width != depth_width
+            or self.latest_camera_info.height != depth_height
+        ):
+            rospy.logwarn_throttle(2, "CameraInfo 尺寸與深度圖不一致，跳過處理。")
+            return
+
+        if (
+            not self.latest_depth_stamp.is_zero()
+            and not detections_msg.header.stamp.is_zero()
+        ):
+            try:
+                sensor_timestamps_match = timestamps_within(
+                    self.latest_depth_stamp.to_sec(),
+                    detections_msg.header.stamp.to_sec(),
+                    self.maximum_sensor_delta,
+                )
+            except ValueError as error:
+                rospy.logwarn_throttle(2, f"感測器時間戳無效，跳過處理: {error}")
+                return
+            if not sensor_timestamps_match:
+                rospy.logwarn_throttle(2, "彩色檢測結果與深度圖時間差過大，跳過處理。")
+                return
 
         if not self._is_tracking_active():
             rospy.loginfo_throttle(5, "目前無活躍追踪目標，不進行座標計算。")
@@ -160,7 +229,11 @@ class CoordinateEstimator:
                     continue
 
                 # 2. 計算在相機座標系下的3D點
-                point_in_camera = self._calculate_3d_point(center_u, center_v, mean_depth)
+                try:
+                    point_in_camera = self._calculate_3d_point(center_u, center_v, mean_depth)
+                except ValueError as error:
+                    rospy.logwarn(f"'{detection.Class}' 的相機反投影失敗，跳過處理: {error}")
+                    continue
 
                 # 3. 轉換座標到目標座標系 (e.g., ground_plane)
                 point_in_target_frame = self._transform_point(point_in_camera, self.target_frame_id)
@@ -204,13 +277,11 @@ class CoordinateEstimator:
 
     def _calculate_3d_point(self, u, v, depth_in_meters):
         """根據像素座標和深度，計算在相機座標系中的3D點。"""
-        x = (u - self.cam_cx) * depth_in_meters / self.cam_fx
-        y = (v - self.cam_cy) * depth_in_meters / self.cam_fy
-        z = depth_in_meters
+        x, y, z = deproject_pixel(u, v, depth_in_meters, self.latest_camera_info.K)
         
         point = PointStamped()
-        point.header.frame_id = self.camera_frame_id
-        point.header.stamp = rospy.Time(0) # 使用最新的可用變換
+        point.header.frame_id = self.camera_frame_override or self.latest_camera_info.header.frame_id
+        point.header.stamp = self.latest_depth_stamp
         point.point.x = x
         point.point.y = y
         point.point.z = z
