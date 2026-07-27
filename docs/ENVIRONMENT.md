@@ -147,12 +147,21 @@ src/yolo/yolo11n_942.pt
 
 ## 6. 构建工作空间
 
+XTDrone 使用已验证的提交 `8e88116`。本项目只读取该提交中的官方 actor collision
+插件源码，编译目录和插件产物都保留在本团队工作空间中，不会写入 XTDrone 目录。
+
 ```bash
 cd ~/robocup_fly/2025_ZZU_FLY
 source /opt/ros/noetic/setup.bash
 catkin_init_workspace src
 catkin_make -DCMAKE_BUILD_TYPE=Release
+bash scripts/build_xtdrone_actor_collisions.sh
 ```
+
+构建助手会核对两份官方插件源码的固定 SHA-256 哈希。源码缺失、被修改、不是普通文件
+或是不安全的符号链接时，助手会拒绝构建；请恢复提交 `8e88116` 的原始 XTDrone
+源码，不要改脚本绕过检查。插件最终生成在
+`devel/lib/libActorCollisionsPlugin.so`。
 
 不要提交或复制别人的 `build/`、`devel/`。它们包含绝对路径和本机生成文件，换机器后必须重新构建。
 
@@ -168,4 +177,3 @@ bash 1.sh 6 mission_down.json
 脚本会自动读取当前 GNOME/KDE 会话的 `DISPLAY`、`XAUTHORITY` 和 `XDG_RUNTIME_DIR`。相机传感器依赖 Gazebo 的渲染上下文，即使只需要 ROS 图像话题，也不能让 `gzserver` 在完全没有可用显示会话的环境中启动。
 
 退出时在同一终端按 `Ctrl-C`。不要同时启动两份六机仿真，否则端口、ROS 节点名和 Gazebo 模型名会冲突。
-
