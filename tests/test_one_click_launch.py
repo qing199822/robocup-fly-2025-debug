@@ -547,6 +547,14 @@ class OneClickLaunchTest(unittest.TestCase):
         self.assertLess(script.index(communication), script.index(cameras))
         self.assertLess(script.index(cameras), script.index(yolo))
 
+    def test_xtdrone_models_precede_px4_models_for_realsense_resolution(self):
+        self.assertIn(
+            'export GAZEBO_MODEL_PATH="$XTDRONE_DIR/sitl_config/models:'
+            '$PX4_DIR/Tools/sitl_gazebo/models:$GAZEBO_MODELS_DIR'
+            '${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
+            self.script,
+        )
+
     def test_clean_start_does_not_launch_realsense_gimbal_worker(self):
         script = self.script
         self.assertNotIn("multi_gimbal_control.sh", script)
