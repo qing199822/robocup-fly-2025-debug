@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,16 @@ EXPECTED_OFFICIAL_MANIFEST = {
             "root": "XTDRONE_DIR",
             "path": "sitl_config/models/realsense_camera/realsense_camera.sdf",
             "sha256": "0745c705ac3a90cf16529a9b49729d34f49ce7b457998a4d3cc3f2fb6aab921c",
+        },
+        {
+            "root": "XTDRONE_DIR",
+            "path": "sitl_config/models/realsense_camera/model.config",
+            "sha256": "87df068cf0db6a135c585431ed19060eeb10c49a7f33f21c292306004a832366",
+        },
+        {
+            "root": "XTDRONE_DIR",
+            "path": "sitl_config/models/realsense_camera/meshes/realsense_camera.dae",
+            "sha256": "df88d7930c0f0fdcc80c9eb3e19f2af8296a965e8e6db055ef3bb8e0df14fb85",
         },
         {
             "root": "XTDRONE_DIR",
@@ -192,6 +203,44 @@ class ManifestTest(unittest.TestCase):
         manifest = root / "manifest.json"
         manifest.write_text(json.dumps(data), encoding="utf-8")
         return manifest
+
+    def assert_repository_manifest_rejects_corruption(self, relative_path):
+        repository_manifest = load_manifest(OFFICIAL_MANIFEST)
+        entry = next(
+            (
+                item
+                for item in repository_manifest["files"]
+                if item["root"] == "XTDRONE_DIR"
+                and item["path"] == relative_path
+            ),
+            None,
+        )
+        self.assertIsNotNone(entry, f"official manifest does not cover {relative_path}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / pathlib.Path(*pathlib.PurePosixPath(relative_path).parts)
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"corrupted official file")
+            focused_manifest = self.write_manifest(
+                root,
+                {"versions": TEST_VERSIONS, "files": [entry]},
+            )
+
+            with self.assertRaisesRegex(
+                ComplianceError, rf"校验失败.*{re.escape(relative_path)}"
+            ):
+                verify_manifest(focused_manifest, {"XTDRONE_DIR": root})
+
+    def test_repository_manifest_rejects_corrupted_realsense_model_config(self):
+        self.assert_repository_manifest_rejects_corruption(
+            "sitl_config/models/realsense_camera/model.config"
+        )
+
+    def test_repository_manifest_rejects_corrupted_realsense_mesh(self):
+        self.assert_repository_manifest_rejects_corruption(
+            "sitl_config/models/realsense_camera/meshes/realsense_camera.dae"
+        )
 
     def test_matching_file_passes_and_changed_file_fails(self):
         with tempfile.TemporaryDirectory() as directory:

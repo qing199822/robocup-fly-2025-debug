@@ -634,7 +634,7 @@ class OwnershipVerifierTest(unittest.TestCase):
     def test_required_manifest_identity_set_is_exact(self):
         manifest = json.loads(OFFICIAL_MANIFEST.read_text(encoding="utf-8"))
         checked = self.module.verify_required_manifest_identities(manifest)
-        self.assertEqual(26, len(checked))
+        self.assertEqual(28, len(checked))
         self.assertEqual(checked, sorted(checked, key=lambda item: (item["root"], item["path"])))
 
         missing = {**manifest, "files": manifest["files"][:-1]}
@@ -681,8 +681,8 @@ class OwnershipVerifierTest(unittest.TestCase):
                 )
         self.assertEqual(manifest_digest, evidence["manifest_sha256"])
         self.assertEqual(ownership_digest, evidence["ownership_sha256"])
-        self.assertEqual(26, evidence["checked_files"])
-        self.assertEqual(26, len(evidence["checked_identities"]))
+        self.assertEqual(28, evidence["checked_files"])
+        self.assertEqual(28, len(evidence["checked_identities"]))
         self.assertEqual(
             evidence["checked_identities"],
             sorted(

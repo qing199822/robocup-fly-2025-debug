@@ -12,6 +12,8 @@
     {"root": "XTDRONE_DIR", "path": "sitl_config/models/typhoon_h480/typhoon_h480.sdf", "sha256": "1346f71a33130e3f5634b1513cc5598d1dc2693fdf30d13c2cf9dda2ef2cd29e"},
     {"root": "XTDRONE_DIR", "path": "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf", "sha256": "3b056f3676e8f47b90421c5357eca8154e6686304855eb14467aa82bf60ddd46"},
     {"root": "XTDRONE_DIR", "path": "sitl_config/models/realsense_camera/realsense_camera.sdf", "sha256": "0745c705ac3a90cf16529a9b49729d34f49ce7b457998a4d3cc3f2fb6aab921c"},
+    {"root": "XTDRONE_DIR", "path": "sitl_config/models/realsense_camera/model.config", "sha256": "87df068cf0db6a135c585431ed19060eeb10c49a7f33f21c292306004a832366"},
+    {"root": "XTDRONE_DIR", "path": "sitl_config/models/realsense_camera/meshes/realsense_camera.dae", "sha256": "df88d7930c0f0fdcc80c9eb3e19f2af8296a965e8e6db055ef3bb8e0df14fb85"},
     {"root": "XTDRONE_DIR", "path": "communication/multirotor_communication.py", "sha256": "64c13f6ad6de9181208cf584ac1b796d49d4f153935369b41e64a4b893a74d27"},
     {"root": "XTDRONE_DIR", "path": "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.cc", "sha256": "e15f07b4a9cc19db1a05dd1aafd1b81557b2badf728cc28d666500034b34e499"},
     {"root": "XTDRONE_DIR", "path": "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.hh", "sha256": "78db47b17157eeb97676fc0ceecc95662dd1a8018c3730c492962ca431b61c29"},

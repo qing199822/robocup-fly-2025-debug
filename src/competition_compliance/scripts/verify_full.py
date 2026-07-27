@@ -118,7 +118,7 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'source "$PX4_DIR/Tools/setup_gazebo.bash" "$PX4_DIR" "$PX4_BUILD_DIR"',
         'export PYTHONPATH="$XTDRONE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"',
         'export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:+${ROS_PACKAGE_PATH}:}$PX4_DIR:$PX4_DIR/Tools/sitl_gazebo"',
-        'export GAZEBO_MODEL_PATH="$PX4_DIR/Tools/sitl_gazebo/models:$XTDRONE_DIR/sitl_config/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
+        'export GAZEBO_MODEL_PATH="$XTDRONE_DIR/sitl_config/models:$PX4_DIR/Tools/sitl_gazebo/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
         'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --gazebo-models-dir "$GAZEBO_MODELS_DIR" --xtdrone-pythonpath "$XTDRONE_PYTHONPATH" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
         'start_communication "$XTDRONE_PYTHON" "$XTDRONE_DIR/communication/multirotor_communication.py" || return 1',
     }
@@ -176,6 +176,8 @@ _REQUIRED_OFFICIAL_IDENTITIES = frozenset(
         ("XTDRONE_DIR", "sitl_config/models/typhoon_h480/typhoon_h480.sdf"),
         ("XTDRONE_DIR", "sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf"),
         ("XTDRONE_DIR", "sitl_config/models/realsense_camera/realsense_camera.sdf"),
+        ("XTDRONE_DIR", "sitl_config/models/realsense_camera/model.config"),
+        ("XTDRONE_DIR", "sitl_config/models/realsense_camera/meshes/realsense_camera.dae"),
         ("XTDRONE_DIR", "sitl_config/models/walker/walk_0.dae"),
         ("XTDRONE_DIR", "communication/multirotor_communication.py"),
         ("XTDRONE_DIR", "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.cc"),
