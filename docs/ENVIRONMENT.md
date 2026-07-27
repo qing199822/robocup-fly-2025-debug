@@ -158,9 +158,12 @@ catkin_make -DCMAKE_BUILD_TYPE=Release
 bash scripts/build_xtdrone_actor_collisions.sh
 ```
 
-构建助手会核对两份官方插件源码的固定 SHA-256 哈希。源码缺失、被修改、不是普通文件
-或是不安全的符号链接时，助手会拒绝构建；请恢复提交 `8e88116` 的原始 XTDrone
-源码，不要改脚本绕过检查。插件最终生成在
+构建助手会核对两份官方插件源码和 `CMakeLists.txt` 的固定 SHA-256 哈希。文件缺失、
+被修改、不是普通文件或路径中有不安全的符号链接时，助手会拒绝构建；请恢复提交
+`8e88116` 的原始 XTDrone 文件，不要改脚本绕过检查。
+
+助手使用 `build/.actor-collisions.lock` 串行执行插件构建，避免两次构建互相覆盖。
+它也会拒绝工作空间中指向外部的 `build/` 或 `devel/` 符号链接。插件最终生成在
 `devel/lib/libActorCollisionsPlugin.so`。
 
 不要提交或复制别人的 `build/`、`devel/`。它们包含绝对路径和本机生成文件，换机器后必须重新构建。
