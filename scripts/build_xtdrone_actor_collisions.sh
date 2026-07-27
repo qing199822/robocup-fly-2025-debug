@@ -11,6 +11,29 @@ OUTPUT_DIR="$WORKSPACE_DIR/devel/lib"
 BUILD_ARTIFACT="$BUILD_DIR/libActorCollisionsPlugin.so"
 OUTPUT_FILE="$OUTPUT_DIR/libActorCollisionsPlugin.so"
 
+verify_source_directories() {
+    local source_path="$XTDRONE_DIR"
+    local component
+
+    for component in "XTDrone" "sitl_config" "gazebo_plugin" "actor_collisions"; do
+        if [ "$component" != "XTDrone" ]; then
+            source_path="$source_path/$component"
+        fi
+        if [ -L "$source_path" ]; then
+            echo "错误：官方源码目录 $source_path 是符号链接，拒绝不安全的源码路径。" >&2
+            exit 1
+        fi
+        if [ ! -e "$source_path" ]; then
+            echo "错误：缺少官方源码目录 $source_path。" >&2
+            exit 1
+        fi
+        if [ ! -d "$source_path" ]; then
+            echo "错误：官方源码路径 $source_path 不是目录。" >&2
+            exit 1
+        fi
+    done
+}
+
 verify_official_source() {
     local file_name="$1"
     local expected_hash="$2"
@@ -39,6 +62,7 @@ verify_official_source() {
     fi
 }
 
+verify_source_directories
 verify_official_source \
     "ActorCollisionsPlugin.cc" \
     "e15f07b4a9cc19db1a05dd1aafd1b81557b2badf728cc28d666500034b34e499"
