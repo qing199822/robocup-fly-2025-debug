@@ -61,10 +61,8 @@ class ProcessSupervisor:
         child = subprocess.Popen(self.command)
         self.main_pid = child.pid
         record = process_record(child.pid)
-        if record is None:
-            child.wait()
-            return child.returncode
-        self.tracked[child.pid] = record[1]
+        if record is not None:
+            self.tracked[child.pid] = record[1]
 
         while self.main_status is None and self.requested_signal is None:
             self.reap(time.monotonic() + POLL_SECONDS)

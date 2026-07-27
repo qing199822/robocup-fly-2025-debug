@@ -407,6 +407,37 @@ class LauncherHarness:
             True,
         )
         self._write(
+            "bin/supervisor-first-record-miss",
+            textwrap.dedent(
+                """\
+                #!/usr/bin/python3
+                import importlib.util
+                import os
+                import sys
+
+                spec = importlib.util.spec_from_file_location(
+                    "injected_process_supervisor",
+                    os.environ["PROCESS_SUPERVISOR_MODULE"],
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                original_process_record = module.process_record
+                first_call = True
+
+                def process_record(pid):
+                    global first_call
+                    if first_call:
+                        first_call = False
+                        return None
+                    return original_process_record(pid)
+
+                module.process_record = process_record
+                sys.exit(module.main(sys.argv[2:]))
+                """
+            ),
+            True,
+        )
+        self._write(
             "bin/tee",
             textwrap.dedent(
                 """\
@@ -1377,6 +1408,48 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_supervisor_cleans_descendants_after_initial_identity_read_miss(self):
+        command = textwrap.dedent(
+            """\
+            /usr/bin/setsid fork-storm-leaf &
+            deadline=$((SECONDS + 2))
+            while [ ! -s "$STATE_DIR/fork_storm_child_pids" ] \
+                && [ "$SECONDS" -lt "$deadline" ]; do
+                sleep 0.01
+            done
+            [ -s "$STATE_DIR/fork_storm_child_pids" ]
+            """
+        )
+        launch_env = self.harness.env.copy()
+        launch_env.update(
+            {
+                "PROCESS_SUPERVISOR_MODULE": str(
+                    self.harness.workspace / "scripts/process_supervisor.py"
+                ),
+            }
+        )
+        result = subprocess.run(
+            [
+                str(self.harness.bin / "supervisor-first-record-miss"),
+                str(self.harness.workspace / "scripts/process_supervisor.py"),
+                "--grace-seconds",
+                "1",
+                "--",
+                "bash",
+                "-c",
+                command,
+            ],
+            cwd=self.harness.workspace,
+            env=launch_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
 
     def test_launcher_propagates_supervisor_cleanup_failure(self):
         result, elapsed = self.harness.run(
