@@ -57,7 +57,8 @@ check_sensor_tf() {
     status=$?
     set -e
     if { [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; } \
-        || ! grep -q '^Translation' <<<"$output"; then
+        || ! grep -Eq '^[[:space:]]*(-[[:space:]]*)?Translation[[:space:]]*:' \
+            <<<"$output"; then
         log_line "FAIL TF base_link -> depth_camera_base" >&2
         return 1
     fi

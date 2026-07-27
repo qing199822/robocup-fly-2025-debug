@@ -228,7 +228,11 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             log.read_text(encoding="utf-8").splitlines(),
         )
 
-    def prepare_smoke(self, failure_kind=""):
+    def prepare_smoke(
+        self,
+        failure_kind="",
+        tf_output="- Translation: [0.090, 0.000, -0.040]",
+    ):
         workspace = self.root / "workspace"
         scripts = workspace / "scripts"
         fake_bin = self.root / "bin"
@@ -270,7 +274,7 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             #!/bin/bash
             printf 'tf %s\n' "$*" >> "$SMOKE_CALLS"
             if [ "${FAIL_KIND:-}" = tf ]; then exit 1; fi
-            echo 'Translation: [0.090, 0.000, -0.040]'
+            printf '%s\n' "$TF_OUTPUT"
             ''',
         )
         environment = os.environ.copy()
@@ -282,12 +286,18 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 "SMOKE_CALLS": str(calls),
                 "SMOKE_TIMEOUT_SECONDS": "1",
                 "FAIL_KIND": failure_kind,
+                "TF_OUTPUT": tf_output,
             }
         )
         return workspace, environment, calls
 
-    def run_smoke(self, failure_kind=""):
-        workspace, environment, calls = self.prepare_smoke(failure_kind)
+    def run_smoke(self, failure_kind="", tf_output=None):
+        if tf_output is None:
+            workspace, environment, calls = self.prepare_smoke(failure_kind)
+        else:
+            workspace, environment, calls = self.prepare_smoke(
+                failure_kind, tf_output
+            )
         result = subprocess.run(
             [str(workspace / "scripts" / SMOKE_VERIFIER.name)],
             cwd=self.root,
@@ -303,7 +313,7 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_smoke_success_checks_every_vehicle_and_writes_pass_report(self):
+    def test_smoke_accepts_ros_noetic_tf_output_and_writes_pass_report(self):
         result, calls, report = self.run_smoke()
         self.assertEqual(0, result.returncode, result.stderr)
         for vehicle_id in range(6):
@@ -317,6 +327,13 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 "PASS competition-clean six-vehicle smoke"
             )
         )
+
+    def test_smoke_keeps_accepting_translation_without_list_marker(self):
+        result, _calls, report = self.run_smoke(
+            tf_output="Translation: [0.090, 0.000, -0.040]"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("PASS TF base_link -> depth_camera_base", report)
 
     def test_smoke_missing_topic_fails_fast(self):
         result, calls, report = self.run_smoke("topic")
