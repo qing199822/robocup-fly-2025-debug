@@ -80,6 +80,71 @@ EXPECTED_OFFICIAL_MANIFEST = {
         },
     ],
 }
+EXPECTED_OFFICIAL_MANIFEST["files"].extend(
+    {
+        "root": "XTDRONE_DIR",
+        "path": path,
+        "sha256": digest,
+    }
+    for path, digest in (
+        (
+            "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.cc",
+            "e15f07b4a9cc19db1a05dd1aafd1b81557b2badf728cc28d666500034b34e499",
+        ),
+        (
+            "sitl_config/gazebo_plugin/actor_collisions/ActorCollisionsPlugin.hh",
+            "78db47b17157eeb97676fc0ceecc95662dd1a8018c3730c492962ca431b61c29",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/CMakeLists.txt",
+            "605eb23f6283b21fb67aa2efc3ddf0ca46dd79e292d05e8869f0638513efd786",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/LICENSE",
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/README.md",
+            "71365aa2b8c92ae0dcfbfb970132ead41e224a8489d1ffe4fb2706394278ddb7",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/include/actor_plugin_ros/ActorPluginRos.hpp",
+            "c10b714a548e3e1544df9b224e91a8d8d58acae4e7d7f45f54e1446ca042c411",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/package.xml",
+            "6e662ad661893ded902e6035196328e902d800c5301c431b7c3a321ab3eac595",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/res/waving.dae",
+            "7330302c492898d37fac0cff1cbd26b4381a7254fa14ae9780d7d0b9603a4db7",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin/src/ActorPluginRos.cpp",
+            "ac4bbe7b18aa7a89a50a1daba1648bd3563649bff67ac9b5868018d18664712c",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/CMakeLists.txt",
+            "17e2d8b2c045a92d31b022bb4cf747d90911b288d73d7ab3715ae3a97b1e1b51",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/msg/ActorInfo.msg",
+            "6a96273e5b133de9b94efd82940fb2fdb357234837d7a6a3dc05fa4878ff4ba1",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/msg/ActorMotion.msg",
+            "f6f0f451411ba92053711251142483bda50cb1f06c41be4dfd45ad9b49c150ac",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/package.xml",
+            "66f19fc8fb4fa7ae5d5e6d49475798a79976b865f5798d18e3cd0d9bc1c6601a",
+        ),
+        (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs/srv/ToggleActorWaving.srv",
+            "d73e9d1a650517a232fcc9f41500815544035edcfc815fef640dba5d75967abd",
+        ),
+    )
+)
 
 
 def load_prepare_model_module():

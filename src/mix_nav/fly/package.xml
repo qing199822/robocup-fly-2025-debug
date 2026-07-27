@@ -7,10 +7,10 @@
     This package provides confident takeoff functionality for drone swarms.
   </description>
   
-  <maintainer email="your-email@example.com">Your Name</maintainer>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
   <license>BSD</license>
   
-  <author email="your-email@example.com">Your Name</author>
+  <author email="qing199822@users.noreply.github.com">ZZU FLY Team</author>
   
   <url type="website">http://wiki.ros.org/fly</url>
   <url type="bugtracker">https://github.com/your-repo/fly/issues</url>

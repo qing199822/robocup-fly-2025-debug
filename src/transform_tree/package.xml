@@ -5,10 +5,10 @@
   <description>A package to broadcast TF transforms from odometry messages manually into a /tf topic.</description>
 
   <!-- 维护者信息 -->
-  <maintainer email="your_email@todo.com">Your Name</maintainer>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
 
   <!-- 许可证信息 -->
-  <license>TODO</license> <!-- 例如: BSD, MIT, Apache 2.0 -->
+  <license>LicenseRef-Team-Code</license>
 
   <!-- 
     构建工具依赖，对于catkin包，这总是catkin

@@ -6,8 +6,8 @@
     A C++ package for multi-drone human tracking using an IMM Kalman Filter and a state machine.
   </description>
 
-  <maintainer email="your_email@todo.com">Your Name</maintainer>
-  <license>TODO</license>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
+  <license>LicenseRef-Team-Code</license>
 
   <!-- 1. 构建工具依赖 -->
   <!-- catkin是所有ROS包必需的构建工具 -->

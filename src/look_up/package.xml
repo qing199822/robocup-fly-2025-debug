@@ -4,8 +4,8 @@
   <version>0.1.0</version>
   <description>A package for multi-drone YOLO-based human tracking with a central lookup service.</description>
 
-  <maintainer email="user@todo.todo">Your Name</maintainer>
-  <license>TODO</license>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
+  <license>LicenseRef-Team-Code</license>
 
   <buildtool_depend>catkin</buildtool_depend>
 

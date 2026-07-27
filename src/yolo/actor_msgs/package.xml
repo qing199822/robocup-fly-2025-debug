@@ -5,15 +5,13 @@
   <description>The actor_msgs package</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
-  <!-- Example:  -->
-  <!-- <maintainer email="jane.doe@example.com">Jane Doe</maintainer> -->
-  <maintainer email="cui@todo.todo">cui</maintainer>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
 
 
   <!-- One license tag required, multiple allowed, one license per tag -->
   <!-- Commonly used license strings: -->
   <!--   BSD, MIT, Boost Software License, GPLv2, GPLv3, LGPLv2.1, LGPLv3 -->
-  <license>TODO</license>
+  <license>LicenseRef-Team-Code</license>
 
 
   <!-- Url tags are optional, but multiple are allowed, one per tag -->
@@ -23,9 +21,6 @@
 
 
   <!-- Author tags are optional, multiple are allowed, one per tag -->
-  <!-- Authors do not have to be maintainers, but could be -->
-  <!-- Example: -->
-  <!-- <author email="jane.doe@example.com">Jane Doe</author> -->
 
 
   <!-- The *depend tags are used to specify dependencies -->

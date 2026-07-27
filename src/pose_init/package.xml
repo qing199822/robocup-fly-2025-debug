@@ -6,10 +6,10 @@
     The pose_init package transforms and forwards pose information for multiple drones. 
     It subscribes to local pose topics, adds a fixed offset, and republishes them as global poses.
   </description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
 
   <license>Apache-2.0</license>
-  <author email="your.email@example.com">Your Name</author>
+  <author email="qing199822@users.noreply.github.com">ZZU FLY Team</author>
 
   <!-- 构建工具依赖 -->
   <buildtool_depend>catkin</buildtool_depend>
