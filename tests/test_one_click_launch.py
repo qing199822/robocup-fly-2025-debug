@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import importlib.util
 import pathlib
 import re
 import signal
@@ -9,9 +10,19 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).parents[1]
+
+
+def load_process_supervisor_module():
+    spec = importlib.util.spec_from_file_location(
+        "process_supervisor_under_test", ROOT / "scripts/process_supervisor.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class LauncherHarness:
@@ -76,6 +87,8 @@ class LauncherHarness:
                 "MISSION_DURATION": "3",
                 "IGNORE_TERM": "0",
                 "PS_TREE_DELAY": "0",
+                "AWK_TREE_DELAY": "0",
+                "DATE_MODE": "normal",
                 "LARGE_TREE_CHILDREN": "20",
                 "DISPLAY": ":99",
             }
@@ -208,6 +221,7 @@ class LauncherHarness:
                     || [ "$SIMULATION_MODE" = delayed_fail ] \
                     || [ "$SIMULATION_MODE" = detached_child ] \
                     || [ "$SIMULATION_MODE" = detached_child_then_fail ] \
+                    || [ "$SIMULATION_MODE" = detached_child_ignore_term ] \
                     || [ "$SIMULATION_MODE" = large_tree ]; then
                     echo /gazebo/get_world_properties
                     exit 0
@@ -287,9 +301,14 @@ class LauncherHarness:
                     exit 24
                 fi
                 if [ "$SIMULATION_MODE" = detached_child ] \
-                    || [ "$SIMULATION_MODE" = detached_child_then_fail ]; then
+                    || [ "$SIMULATION_MODE" = detached_child_then_fail ] \
+                    || [ "$SIMULATION_MODE" = detached_child_ignore_term ]; then
                     /usr/bin/setsid bash -c '
-                        trap "exit 0" TERM
+                        if [ "$SIMULATION_MODE" = detached_child_ignore_term ]; then
+                            trap "" TERM
+                        else
+                            trap "exit 0" TERM
+                        fi
                         echo "$$" >> "$STATE_DIR/detached_child_pids"
                         while :; do sleep 1; done
                     ' &
@@ -349,6 +368,33 @@ class LauncherHarness:
             True,
         )
         self._write(
+            "bin/date",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                if [ "$DATE_MODE" = hang ]; then
+                    sleep 10
+                    exit 1
+                fi
+                exec /usr/bin/date "$@"
+                """
+            ),
+            True,
+        )
+        self._write(
+            "bin/awk",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                if [ "$AWK_TREE_DELAY" != 0 ]; then
+                    sleep "$AWK_TREE_DELAY"
+                fi
+                exec /usr/bin/awk "$@"
+                """
+            ),
+            True,
+        )
+        self._write(
             "bin/ps",
             textwrap.dedent(
                 """\
@@ -368,6 +414,10 @@ class LauncherHarness:
                 """\
                 #!/bin/bash
                 echo "$$" >> "$STATE_DIR/setsid_pids"
+                if [ "$SETSID_MODE" = root_delay ]; then
+                    touch "$STATE_DIR/setsid_called"
+                    exec /bin/sleep 30
+                fi
                 if [ "$SETSID_MODE" = delay ]; then
                     sleep 2 &
                     delay_pid=$!
@@ -413,9 +463,11 @@ class LauncherHarness:
         *,
         signal_number=signal.SIGTERM,
         signal_process_group=False,
+        **env,
     ):
         launch_env = self.env.copy()
         launch_env["SETSID_MODE"] = "delay"
+        launch_env.update({key: str(value) for key, value in env.items()})
         output_path = self.state / "interrupt-output.txt"
         started = time.monotonic()
         with output_path.open("w", encoding="utf-8") as output_file:
@@ -1054,6 +1106,21 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         self.assertEqual([], self.harness.recorded_processes_still_exist())
         self.assertFalse(self.harness.run_tmp_exists())
 
+    def test_term_ignoring_detached_child_is_killed_before_supervisor_exits(self):
+        result, elapsed = self.harness.run(
+            SIMULATION_MODE="detached_child_ignore_term"
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        detached_pid = int(
+            (self.harness.state / "detached_child_pids").read_text().strip()
+        )
+        with self.assertRaises(ProcessLookupError):
+            os.kill(detached_pid, 0)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
     def test_reused_root_pid_identity_is_not_signaled(self):
         unrelated = subprocess.Popen(["/bin/sleep", "30"])
         identity_file = self.harness.state / "fake-root-start-time"
@@ -1095,10 +1162,10 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
                 unrelated.terminate()
             unrelated.wait(timeout=1)
 
-    def test_large_tree_discovery_is_inside_cleanup_deadline(self):
+    def test_large_owned_tree_cleanup_is_bounded(self):
         result, elapsed = self.harness.run(
             SIMULATION_MODE="large_tree",
-            PS_TREE_DELAY="0.15",
+            LARGE_TREE_CHILDREN="100",
             timeout_seconds=5,
         )
 
@@ -1106,6 +1173,93 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         self.assertLess(elapsed, 3, result.stdout)
         self.assertEqual([], self.harness.recorded_processes_still_exist())
         self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_shell_fallback_closure_is_inside_cleanup_deadline(self):
+        result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid(
+            AWK_TREE_DELAY="10", SETSID_MODE="root_delay"
+        )
+
+        self.assertFalse(timed_out, result.stdout)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2.2, result.stdout)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_supervisor_identity_scan_stops_at_monotonic_deadline(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        supervisor.tracked = {100000 + index: 1 for index in range(200)}
+
+        def slow_process_record(_pid):
+            time.sleep(0.01)
+            return supervisor.supervisor_pid, 1
+
+        started = time.monotonic()
+        deadline = started + 0.05
+        with mock.patch.object(
+            supervisor_module, "process_record", side_effect=slow_process_record
+        ), mock.patch.object(supervisor, "discover"):
+            supervisor.wait_until_empty(deadline, signal.SIGTERM)
+
+        self.assertLess(time.monotonic() - started, 0.25)
+
+    def test_supervisor_reap_stops_at_monotonic_deadline(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        next_pid = iter(range(200000, 200200))
+
+        def slow_waitpid(_pid, _options):
+            time.sleep(0.01)
+            try:
+                return next(next_pid), 0
+            except StopIteration:
+                return 0, 0
+
+        started = time.monotonic()
+        deadline = started + 0.05
+        with mock.patch.object(supervisor, "discover"), mock.patch.object(
+            supervisor_module.os, "waitpid", side_effect=slow_waitpid
+        ):
+            supervisor.wait_until_empty(deadline, signal.SIGTERM)
+
+        self.assertLess(time.monotonic() - started, 0.25)
+
+    def test_supervisor_term_is_sent_once_per_initial_snapshot(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        supervisor.tracked = {123456: 1}
+
+        with mock.patch.object(supervisor, "discover"), mock.patch.object(
+            supervisor, "identity_matches", return_value=True
+        ), mock.patch.object(supervisor, "reap"), mock.patch.object(
+            supervisor, "has_live_tracked", return_value=True
+        ), mock.patch.object(supervisor_module.os, "kill") as kill_process:
+            supervisor.wait_until_empty(time.monotonic() + 0.08, signal.SIGTERM)
+
+        self.assertEqual(1, kill_process.call_count)
+
+    def test_cleanup_clock_does_not_depend_on_wall_clock_command(self):
+        probe = subprocess.run(
+            [
+                "/usr/bin/timeout",
+                "0.25s",
+                "bash",
+                "-c",
+                'source "$LAUNCHER_SCRIPT"; current_milliseconds >/dev/null',
+            ],
+            env={
+                **self.harness.env,
+                "DATE_MODE": "hang",
+                "LAUNCHER_SCRIPT": str(self.harness.workspace / "1.sh"),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        self.assertEqual(0, probe.returncode, probe.stdout)
 
     def test_ctrl_c_cleans_detached_owned_child_but_preserves_unrelated_session(self):
         unrelated = subprocess.Popen(

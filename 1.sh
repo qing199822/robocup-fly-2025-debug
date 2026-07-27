@@ -256,7 +256,16 @@ ensure_official_readonly_sandbox() {
 }
 
 current_milliseconds() {
-    date +%s%3N
+    local uptime seconds fraction
+
+    IFS= read -r uptime 2>/dev/null </proc/uptime || return 1
+    uptime="${uptime%% *}"
+    seconds="${uptime%%.*}"
+    fraction="${uptime#*.}000"
+    fraction="${fraction:0:3}"
+    [[ "$seconds" =~ ^[0-9]+$ ]] || return 1
+    [[ "$fraction" =~ ^[0-9][0-9][0-9]$ ]] || return 1
+    printf '%d\n' "$((10#$seconds * 1000 + 10#$fraction))"
 }
 
 sleep_milliseconds() {
@@ -283,6 +292,16 @@ sleep_until_deadline() {
         remaining="$maximum_milliseconds"
     fi
     sleep_milliseconds "$remaining"
+}
+
+supervisor_cleanup_grace_seconds() {
+    local milliseconds=$((CLEANUP_GRACE_SECONDS * 1000 - 300))
+
+    if [ "$milliseconds" -lt 100 ]; then
+        milliseconds=100
+    fi
+    printf '%d.%03d\n' \
+        "$((milliseconds / 1000))" "$((milliseconds % 1000))"
 }
 
 validate_positive_integer() {
@@ -612,7 +631,8 @@ owned_group_wrapper() {
         exec "$supervisor_python" "$process_supervisor" \
             --grace-seconds "$cleanup_grace_seconds" -- "$@"
     ' -- "$group_ready_file" "$start_file" "$command_started_file" \
-        "$SUPERVISOR_PYTHON" "$PROCESS_SUPERVISOR" "$CLEANUP_GRACE_SECONDS" "$@"
+        "$SUPERVISOR_PYTHON" "$PROCESS_SUPERVISOR" \
+        "$(supervisor_cleanup_grace_seconds)" "$@"
 }
 
 cleanup_owned_gate_dir() {
@@ -828,7 +848,7 @@ owned_target_is_running() {
 collect_direct_process_tree() {
     local root_pid="$1"
     local deadline="$2"
-    local child expected_start_time now remaining snapshot start_time timeout_value
+    local child expected_start_time now remaining start_time timeout_value
 
     expected_start_time="${DIRECT_FALLBACK_START_TIMES[$root_pid]:-}"
     if [ -z "$expected_start_time" ]; then
@@ -851,8 +871,16 @@ collect_direct_process_tree() {
     [ "$remaining" -gt 0 ] || return
     printf -v timeout_value '%d.%03ds' \
         "$((remaining / 1000))" "$((remaining % 1000))"
-    snapshot="$(timeout "$timeout_value" ps -eo pid=,ppid= 2>/dev/null)" || return
-    for child in $(awk -v root="$root_pid" '
+    while IFS= read -r child; do
+        [ "$(current_milliseconds)" -lt "$deadline" ] || return
+        start_time="$(process_start_time "$child")" || continue
+        if [ -z "${DIRECT_FALLBACK_START_TIMES[$child]+tracked}" ]; then
+            DIRECT_FALLBACK_START_TIMES["$child"]="$start_time"
+            DIRECT_FALLBACK_PIDS+=("$child")
+        fi
+    done < <(
+        timeout "$timeout_value" ps -eo pid=,ppid= 2>/dev/null \
+            | timeout "$timeout_value" awk -v root="$root_pid" '
         { parent[$1] = $2 }
         END {
             owned[root] = 1
@@ -870,14 +898,8 @@ collect_direct_process_tree() {
                 if (pid != root && owned[pid]) print pid
             }
         }
-    ' <<< "$snapshot"); do
-        [ "$(current_milliseconds)" -lt "$deadline" ] || return
-        start_time="$(process_start_time "$child")" || continue
-        if [ -z "${DIRECT_FALLBACK_START_TIMES[$child]+tracked}" ]; then
-            DIRECT_FALLBACK_START_TIMES["$child"]="$start_time"
-            DIRECT_FALLBACK_PIDS+=("$child")
-        fi
-    done
+    '
+    )
 }
 
 direct_fallback_is_running() {
@@ -912,6 +934,7 @@ signal_owned_target() {
     local deadline="${3:-$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))}"
 
     owned_identity_matches "$pid" || return 0
+    [ "$(current_milliseconds)" -lt "$deadline" ] || return 0
 
     if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
         if process_is_running "$pid"; then
@@ -927,7 +950,8 @@ signal_owned_target() {
 }
 
 cleanup() {
-    local index pid deadline active pending_unregistered
+    local index pid active pending_unregistered
+    local cleanup_started final_deadline term_deadline
 
     if "$CLEANUP_DONE"; then
         return "$CLEANUP_STATUS"
@@ -937,7 +961,12 @@ cleanup() {
 
     echo
     echo "正在停止本脚本启动的节点..."
-    deadline=$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))
+    cleanup_started="$(current_milliseconds)"
+    final_deadline=$((cleanup_started + CLEANUP_GRACE_SECONDS * 1000))
+    term_deadline=$((final_deadline - 100))
+    if [ "$term_deadline" -lt "$cleanup_started" ]; then
+        term_deadline="$cleanup_started"
+    fi
 
     pending_unregistered=""
     if [ -n "$PENDING_PID" ] && [ -z "${OWNED_NAMES[$PENDING_PID]+registered}" ]; then
@@ -946,28 +975,37 @@ cleanup() {
             && [ -n "$PENDING_START_TIME" ]; then
             DIRECT_FALLBACK_START_TIMES["$pending_unregistered"]="$PENDING_START_TIME"
             DIRECT_FALLBACK_PIDS+=("$pending_unregistered")
-            signal_direct_process_tree TERM "$pending_unregistered" "$deadline"
+            signal_direct_process_tree TERM "$pending_unregistered" "$term_deadline"
         fi
     fi
 
     for ((index=${#OWNED_PIDS[@]} - 1; index >= 0; index--)); do
+        [ "$(current_milliseconds)" -lt "$term_deadline" ] || break
         pid="${OWNED_PIDS[$index]}"
-        signal_owned_target TERM "$pid" "$deadline"
+        signal_owned_target TERM "$pid" "$term_deadline"
     done
 
-    while [ "$(current_milliseconds)" -lt "$deadline" ]; do
+    while [ "$(current_milliseconds)" -lt "$term_deadline" ]; do
         active=false
         if [ -n "$pending_unregistered" ] \
             && direct_fallback_is_running "$pending_unregistered"; then
             active=true
         fi
         for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+            if [ "$(current_milliseconds)" -ge "$term_deadline" ]; then
+                active=true
+                break
+            fi
             if direct_fallback_is_running "$pid"; then
                 active=true
                 break
             fi
         done
         for pid in "${OWNED_PIDS[@]}"; do
+            if [ "$(current_milliseconds)" -ge "$term_deadline" ]; then
+                active=true
+                break
+            fi
             if owned_target_is_running "$pid"; then
                 active=true
                 break
@@ -980,31 +1018,40 @@ cleanup() {
     done
 
     for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+        [ "$(current_milliseconds)" -lt "$final_deadline" ] || break
         if direct_fallback_is_running "$pid"; then
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
     for pid in "${OWNED_PIDS[@]}"; do
+        [ "$(current_milliseconds)" -lt "$final_deadline" ] || break
         if owned_target_is_running "$pid"; then
             echo "进程组 ${OWNED_NAMES[$pid]} 未响应 TERM，发送 KILL。" >&2
-            signal_owned_target KILL "$pid" "$deadline"
+            signal_owned_target KILL "$pid" "$final_deadline"
         fi
     done
 
-    deadline=$(( $(current_milliseconds) + 1000 ))
-    while [ "$(current_milliseconds)" -lt "$deadline" ]; do
+    while [ "$(current_milliseconds)" -lt "$final_deadline" ]; do
         active=false
         if [ -n "$pending_unregistered" ] \
             && direct_fallback_is_running "$pending_unregistered"; then
             active=true
         fi
         for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+            if [ "$(current_milliseconds)" -ge "$final_deadline" ]; then
+                active=true
+                break
+            fi
             if direct_fallback_is_running "$pid"; then
                 active=true
                 break
             fi
         done
         for pid in "${OWNED_PIDS[@]}"; do
+            if [ "$(current_milliseconds)" -ge "$final_deadline" ]; then
+                active=true
+                break
+            fi
             if owned_target_is_running "$pid"; then
                 active=true
                 break
@@ -1017,12 +1064,20 @@ cleanup() {
     done
 
     for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+        if [ "$(current_milliseconds)" -ge "$final_deadline" ]; then
+            CLEANUP_STATUS=1
+            break
+        fi
         if direct_fallback_is_running "$pid"; then
             echo "错误：直接清理的进程未在期限内退出（PID $pid）。" >&2
             CLEANUP_STATUS=1
         fi
     done
     for pid in "${OWNED_PIDS[@]}"; do
+        if [ "$(current_milliseconds)" -ge "$final_deadline" ]; then
+            CLEANUP_STATUS=1
+            break
+        fi
         if ! reap_if_exited "$pid"; then
             echo "错误：无法在清理期限内回收 ${OWNED_NAMES[$pid]}（PID $pid）。" >&2
             CLEANUP_STATUS=1
@@ -1030,7 +1085,9 @@ cleanup() {
     done
 
     if [ -n "$pending_unregistered" ]; then
-        if direct_fallback_is_running "$pending_unregistered"; then
+        if [ "$(current_milliseconds)" -ge "$final_deadline" ]; then
+            CLEANUP_STATUS=1
+        elif direct_fallback_is_running "$pending_unregistered"; then
             echo "错误：无法在清理期限内回收未登记进程（PID $pending_unregistered）。" >&2
             CLEANUP_STATUS=1
         else

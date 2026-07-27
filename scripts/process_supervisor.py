@@ -66,21 +66,17 @@ class ProcessSupervisor:
         self.tracked[child.pid] = record[1]
 
         while self.main_status is None and self.requested_signal is None:
-            self.discover(time.monotonic() + POLL_SECONDS)
-            self.reap()
+            scan_deadline = time.monotonic() + POLL_SECONDS
+            self.discover(scan_deadline)
+            self.reap(scan_deadline)
             if self.main_status is None and self.requested_signal is None:
                 time.sleep(POLL_SECONDS)
 
         cleanup_started = time.monotonic()
-        term_deadline = cleanup_started + max(0.1, self.grace_seconds - 0.25)
+        final_deadline = cleanup_started + self.grace_seconds
+        term_deadline = max(cleanup_started, final_deadline - KILL_WAIT_SECONDS)
         self.wait_until_empty(term_deadline, signal.SIGTERM)
-
-        kill_deadline = min(
-            cleanup_started + self.grace_seconds,
-            time.monotonic() + KILL_WAIT_SECONDS,
-        )
-        if self.live_tracked():
-            self.wait_until_empty(kill_deadline, signal.SIGKILL)
+        self.wait_until_empty(final_deadline, signal.SIGKILL)
 
         if self.main_status is not None:
             return self.main_status
@@ -89,22 +85,25 @@ class ProcessSupervisor:
     def discover(self, deadline):
         snapshot = {}
         try:
-            proc_entries = os.listdir("/proc")
+            proc_entries = os.scandir("/proc")
         except OSError:
             return
-        for entry in proc_entries:
-            if time.monotonic() >= deadline:
-                return
-            if not entry.isdigit():
-                continue
-            pid = int(entry)
-            record = process_record(pid)
-            if record is not None:
-                snapshot[pid] = record
+        with proc_entries:
+            for entry in proc_entries:
+                if time.monotonic() >= deadline:
+                    return
+                if not entry.name.isdigit():
+                    continue
+                pid = int(entry.name)
+                record = process_record(pid)
+                if record is not None:
+                    snapshot[pid] = record
 
         ownership = {}
 
         def is_owned(pid, visiting):
+            if time.monotonic() >= deadline:
+                return False
             if pid == self.supervisor_pid:
                 return True
             if pid in ownership:
@@ -133,33 +132,52 @@ class ProcessSupervisor:
         record = process_record(pid)
         return record is not None and record[1] == self.tracked.get(pid)
 
-    def live_tracked(self):
-        return [pid for pid in self.tracked if self.identity_matches(pid)]
+    def has_live_tracked(self, deadline):
+        for pid in self.tracked:
+            if time.monotonic() >= deadline:
+                return True
+            if self.identity_matches(pid):
+                return True
+        return False
 
     def stop_descendants(self, signal_number, deadline):
         self.discover(deadline)
-        for pid in list(self.tracked):
-            if time.monotonic() >= deadline:
-                return
-            if not self.identity_matches(pid):
+        if self.main_pid in self.tracked:
+            self.signal_tracked_process(self.main_pid, signal_number, deadline)
+        for pid in self.tracked:
+            if pid == self.main_pid:
                 continue
-            try:
-                os.kill(pid, signal_number)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                pass
+            self.signal_tracked_process(pid, signal_number, deadline)
+
+    def signal_tracked_process(self, pid, signal_number, deadline):
+        if time.monotonic() >= deadline:
+            return
+        if not self.identity_matches(pid):
+            return
+        try:
+            os.kill(pid, signal_number)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
 
     def wait_until_empty(self, deadline, signal_number):
+        self.stop_descendants(signal_number, deadline)
         while time.monotonic() < deadline:
-            self.stop_descendants(signal_number, deadline)
-            self.reap()
-            if not self.live_tracked():
-                return
+            self.reap(deadline)
+            if time.monotonic() >= deadline:
+                return False
+            if not self.has_live_tracked(deadline):
+                return True
             time.sleep(min(POLL_SECONDS, max(0, deadline - time.monotonic())))
+            if signal_number == signal.SIGKILL:
+                self.stop_descendants(signal_number, deadline)
+            else:
+                self.discover(deadline)
+        return False
 
-    def reap(self):
-        while True:
+    def reap(self, deadline):
+        while time.monotonic() < deadline:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
