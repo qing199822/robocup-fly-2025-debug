@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-import os
 import importlib.util
+import os
 import pathlib
 import re
 import signal
@@ -222,6 +222,7 @@ class LauncherHarness:
                     || [ "$SIMULATION_MODE" = detached_child ] \
                     || [ "$SIMULATION_MODE" = detached_child_then_fail ] \
                     || [ "$SIMULATION_MODE" = detached_child_ignore_term ] \
+                    || [ "$SIMULATION_MODE" = continuing_fork_storm ] \
                     || [ "$SIMULATION_MODE" = large_tree ]; then
                     echo /gazebo/get_world_properties
                     exit 0
@@ -322,6 +323,15 @@ class LauncherHarness:
                         exit 24
                     fi
                 fi
+                if [ "$SIMULATION_MODE" = continuing_fork_storm ]; then
+                    /usr/bin/setsid fork-storm-child &
+                    deadline=$((SECONDS + 2))
+                    while [ ! -s "$STATE_DIR/fork_storm_spawner_pids" ] \
+                        && [ "$SECONDS" -lt "$deadline" ]; do
+                        sleep 0.01
+                    done
+                    [ -s "$STATE_DIR/fork_storm_spawner_pids" ] || exit 26
+                fi
                 if [ "$SIMULATION_MODE" = large_tree ]; then
                     for unused in $(seq 1 "$LARGE_TREE_CHILDREN"); do
                         sleep 30 &
@@ -333,6 +343,40 @@ class LauncherHarness:
                 else
                     trap 'exit 0' TERM
                 fi
+                while :; do sleep 1; done
+                """
+            ),
+            True,
+        )
+        self._write(
+            "bin/fork-storm-child",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                trap 'forking=true' TERM
+                echo "$$" >> "$STATE_DIR/fork_storm_spawner_pids"
+                forking=false
+                count=0
+                while :; do
+                    if "$forking" && [ "$count" -lt 200 ]; then
+                        /usr/bin/setsid fork-storm-leaf &
+                        count=$((count + 1))
+                        sleep 0.005
+                    else
+                        sleep 0.01
+                    fi
+                done
+                """
+            ),
+            True,
+        )
+        self._write(
+            "bin/fork-storm-leaf",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                trap '' TERM
+                echo "$$" >> "$STATE_DIR/fork_storm_child_pids"
                 while :; do sleep 1; done
                 """
             ),
@@ -582,6 +626,8 @@ class LauncherHarness:
             "setsid_pids",
             "setsid_descendant_pids",
             "detached_child_pids",
+            "fork_storm_spawner_pids",
+            "fork_storm_child_pids",
             "large_tree_pids",
         ):
             marker = self.state / marker_name
@@ -603,6 +649,8 @@ class LauncherHarness:
             "setsid_pids",
             "setsid_descendant_pids",
             "detached_child_pids",
+            "fork_storm_spawner_pids",
+            "fork_storm_child_pids",
             "large_tree_pids",
         ):
             marker = self.state / marker_name
@@ -1239,6 +1287,45 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
             supervisor.wait_until_empty(time.monotonic() + 0.08, signal.SIGTERM)
 
         self.assertEqual(1, kill_process.call_count)
+
+    def test_supervisor_signal_loop_stops_after_deadline(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        supervisor.tracked = {100000 + index: 1 for index in range(1000)}
+
+        with mock.patch.object(supervisor, "discover"), mock.patch.object(
+            supervisor, "signal_tracked_process"
+        ) as signal_process:
+            supervisor.stop_descendants(signal.SIGTERM, time.monotonic() - 1)
+
+        self.assertEqual(0, signal_process.call_count)
+
+    def test_cleanup_bounds_continuing_detached_fork_storm(self):
+        unrelated = subprocess.Popen(
+            ["/usr/bin/setsid", "/bin/sleep", "30"],
+        )
+        try:
+            result, elapsed = self.harness.run(
+                SIMULATION_MODE="continuing_fork_storm"
+            )
+
+            self.assertLess(elapsed, 5, result.stdout)
+            child_pids = (self.harness.state / "fork_storm_child_pids").read_text(
+                encoding="ascii"
+            ).splitlines()
+            self.assertGreaterEqual(len(child_pids), 5, result.stdout)
+            self.assertEqual([], self.harness.recorded_processes_still_exist())
+            self.assertIsNone(unrelated.poll(), "cleanup killed an unrelated session")
+            self.assertFalse(self.harness.run_tmp_exists())
+            self.assertEqual(0, result.returncode, result.stdout)
+        finally:
+            if unrelated.poll() is None:
+                unrelated.terminate()
+            try:
+                unrelated.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                unrelated.kill()
+                unrelated.wait(timeout=1)
 
     def test_cleanup_clock_does_not_depend_on_wall_clock_command(self):
         probe = subprocess.run(

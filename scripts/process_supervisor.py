@@ -142,9 +142,13 @@ class ProcessSupervisor:
 
     def stop_descendants(self, signal_number, deadline):
         self.discover(deadline)
+        if time.monotonic() >= deadline:
+            return
         if self.main_pid in self.tracked:
             self.signal_tracked_process(self.main_pid, signal_number, deadline)
         for pid in self.tracked:
+            if time.monotonic() >= deadline:
+                return
             if pid == self.main_pid:
                 continue
             self.signal_tracked_process(pid, signal_number, deadline)
@@ -165,15 +169,14 @@ class ProcessSupervisor:
         self.stop_descendants(signal_number, deadline)
         while time.monotonic() < deadline:
             self.reap(deadline)
+            self.discover(deadline)
             if time.monotonic() >= deadline:
                 return False
             if not self.has_live_tracked(deadline):
                 return True
-            time.sleep(min(POLL_SECONDS, max(0, deadline - time.monotonic())))
             if signal_number == signal.SIGKILL:
                 self.stop_descendants(signal_number, deadline)
-            else:
-                self.discover(deadline)
+            time.sleep(min(POLL_SECONDS, max(0, deadline - time.monotonic())))
         return False
 
     def reap(self, deadline):
