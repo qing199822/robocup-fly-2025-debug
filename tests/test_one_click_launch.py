@@ -356,7 +356,12 @@ class LauncherHarness:
         result.stdout = output_path.read_text(encoding="utf-8")
         return result, time.monotonic() - started
 
-    def interrupt_during_setsid(self, *, signal_process_group=False):
+    def interrupt_during_setsid(
+        self,
+        *,
+        signal_number=signal.SIGTERM,
+        signal_process_group=False,
+    ):
         launch_env = self.env.copy()
         launch_env["SETSID_MODE"] = "delay"
         output_path = self.state / "interrupt-output.txt"
@@ -381,9 +386,9 @@ class LauncherHarness:
                 raise AssertionError("setsid stub was not reached")
             child_pid = int((self.state / "setsid_pids").read_text().splitlines()[-1])
             if signal_process_group:
-                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(process.pid, signal_number)
             else:
-                os.kill(process.pid, signal.SIGTERM)
+                os.kill(process.pid, signal_number)
             timed_out = False
             try:
                 returncode = process.wait(timeout=2)
@@ -837,6 +842,34 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
 
         self.assertFalse(timed_out, result.stdout)
         self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        self.assertFalse(self.harness.run_tmp_exists())
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+
+    def test_terminal_process_group_sigint_has_no_leak(self):
+        result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid(
+            signal_number=signal.SIGINT,
+            signal_process_group=True,
+        )
+
+        self.assertFalse(timed_out, result.stdout)
+        self.assertEqual(130, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        self.assertFalse(self.harness.run_tmp_exists())
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+
+    def test_terminal_process_group_sighup_has_no_leak(self):
+        result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid(
+            signal_number=signal.SIGHUP,
+            signal_process_group=True,
+        )
+
+        self.assertFalse(timed_out, result.stdout)
+        self.assertEqual(129, result.returncode, result.stdout)
         self.assertLess(elapsed, 2, result.stdout)
         with self.assertRaises(ProcessLookupError):
             os.kill(child_pid, 0)

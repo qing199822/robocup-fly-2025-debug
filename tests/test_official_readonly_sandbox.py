@@ -29,6 +29,10 @@ class OfficialReadonlySandboxTest(unittest.TestCase):
         self.assertIn(
             'kill -s "$signal_name" "$OFFICIAL_SANDBOX_CHILD_PID"', self.text
         )
+        self.assertIn(
+            'kill -TERM "$OFFICIAL_SANDBOX_CHILD_PID"', self.text
+        )
+        self.assertIn("INT) sandbox_status=130", self.text)
         self.assertIn('"$SCRIPT_DIR/1.sh" "$@"', self.text)
         self.assertLess(
             self.text.index('ensure_official_readonly_sandbox "$@"'),

@@ -535,6 +535,46 @@ class OwnershipVerifierTest(unittest.TestCase):
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.canonical_manifest_path(root, canonical)
 
+    def test_only_the_canonical_repository_ownership_is_accepted(self):
+        self.assertEqual(
+            OWNERSHIP.resolve(),
+            self.module.canonical_ownership_path(ROOT, OWNERSHIP),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            canonical = root / "src/competition_compliance/config/ownership.json"
+            canonical.parent.mkdir(parents=True)
+            canonical.write_text('{"entries": []}', encoding="utf-8")
+            alternate = root / "alternate.json"
+            alternate.write_text('{"entries": []}', encoding="utf-8")
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_ownership_path(root, alternate)
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_ownership_path(
+                    root,
+                    root / "src/competition_compliance/config/../config/ownership.json",
+                )
+            canonical.unlink()
+            canonical.symlink_to(alternate)
+            with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
+                self.module.canonical_ownership_path(root, canonical)
+
+    def test_ownership_is_loaded_and_hashed_from_the_same_bytes(self):
+        encoded = OWNERSHIP.read_bytes()
+        with mock.patch.object(
+            pathlib.Path,
+            "read_bytes",
+            autospec=True,
+            return_value=encoded,
+        ) as read_bytes:
+            entries, digest = self.module.load_ownership_with_digest(OWNERSHIP)
+        self.assertEqual(1, read_bytes.call_count)
+        self.assertEqual(hashlib.sha256(encoded).hexdigest(), digest)
+        self.assertEqual(
+            json.loads(encoded.decode("utf-8"))["entries"],
+            entries,
+        )
+
     def test_required_manifest_identity_set_is_exact(self):
         manifest = json.loads(OFFICIAL_MANIFEST.read_text(encoding="utf-8"))
         checked = self.module.verify_required_manifest_identities(manifest)
@@ -552,18 +592,39 @@ class OwnershipVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ComplianceError, "多余"):
             self.module.verify_required_manifest_identities(extra)
 
-    def test_evidence_binds_canonical_manifest_and_checked_identities(self):
+    def test_evidence_binds_canonical_inputs_and_verified_classifications(self):
         manifest = json.loads(OFFICIAL_MANIFEST.read_text(encoding="utf-8"))
         manifest_digest = sha256(OFFICIAL_MANIFEST)
-        with mock.patch.object(
-            self.module,
-            "sha256_file",
-            side_effect=AssertionError("evidence must not reread the manifest"),
-        ):
-            evidence = self.module.build_evidence(
-                manifest_digest, manifest, manifest["versions"]
-            )
+        ownership_entries = json.loads(OWNERSHIP.read_text(encoding="utf-8"))["entries"]
+        ownership_digest = sha256(OWNERSHIP)
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            declared_roots = {}
+            for name in (
+                "PX4_DIR",
+                "XTDRONE_DIR",
+                "GAZEBO_MODELS_DIR",
+                "XTDRONE_PYTHONPATH",
+            ):
+                root_path = temporary / name
+                root_path.mkdir()
+                declared_roots[name] = root_path
+            runtime_roots = self.module.canonical_runtime_roots(declared_roots)
+            with mock.patch.object(
+                self.module,
+                "sha256_file",
+                side_effect=AssertionError("evidence must not reread canonical inputs"),
+            ):
+                evidence = self.module.build_evidence(
+                    manifest_digest,
+                    manifest,
+                    manifest["versions"],
+                    ownership_digest,
+                    ownership_entries,
+                    runtime_roots,
+                )
         self.assertEqual(manifest_digest, evidence["manifest_sha256"])
+        self.assertEqual(ownership_digest, evidence["ownership_sha256"])
         self.assertEqual(26, evidence["checked_files"])
         self.assertEqual(26, len(evidence["checked_identities"]))
         self.assertEqual(
@@ -576,6 +637,54 @@ class OwnershipVerifierTest(unittest.TestCase):
         self.assertIn("archive", evidence["integrity_basis"])
         self.assertIn("supplemental", evidence["entrypoint_guard"])
         self.assertTrue(evidence["critical_official_files_match"])
+        self.assertEqual(
+            sorted(
+                (
+                    {"path": entry["path"], "kind": entry["kind"]}
+                    for entry in ownership_entries
+                ),
+                key=lambda item: item["path"],
+            ),
+            evidence["package_classifications"],
+        )
+        self.assertEqual(
+            {name: str(path) for name, path in runtime_roots.items()},
+            evidence["runtime_roots"],
+        )
+
+    def test_runtime_roots_reject_aliases_symlinks_and_wrong_key_sets(self):
+        names = (
+            "PX4_DIR",
+            "XTDRONE_DIR",
+            "GAZEBO_MODELS_DIR",
+            "XTDRONE_PYTHONPATH",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            roots = {}
+            for name in names:
+                path = temporary / name
+                path.mkdir()
+                roots[name] = path
+            self.assertEqual(
+                roots,
+                self.module.canonical_runtime_roots(roots),
+            )
+
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_runtime_roots(
+                    {**roots, "PX4_DIR": roots["PX4_DIR"] / ".." / "PX4_DIR"}
+                )
+            alias = temporary / "px4-alias"
+            alias.symlink_to(roots["PX4_DIR"], target_is_directory=True)
+            with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
+                self.module.canonical_runtime_roots({**roots, "PX4_DIR": alias})
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_runtime_roots(
+                    {name: path for name, path in roots.items() if name != "PX4_DIR"}
+                )
+            with self.assertRaises(self.module.ComplianceError):
+                self.module.canonical_runtime_roots({**roots, "EXTRA": temporary})
 
     @staticmethod
     def write_entrypoints(root, script_text, launch_text="<launch/>"):
@@ -790,6 +899,90 @@ class OwnershipVerifierTest(unittest.TestCase):
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.write_evidence(root, final, {"status": "pass"})
             self.assertEqual([], list(outside.iterdir()))
+
+    def test_evidence_fails_closed_if_artifact_directory_is_replaced_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifacts = root / "competition-artifacts"
+            artifacts.mkdir()
+            moved = root / "moved-artifacts"
+            final = artifacts / "result.json"
+            original_open = self.module.os.open
+            swapped = False
+
+            def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+                if path == "competition-artifacts" and dir_fd is not None and not swapped:
+                    artifacts.rename(moved)
+                    artifacts.mkdir()
+                    swapped = True
+                return descriptor
+
+            with mock.patch.object(
+                self.module.os, "open", side_effect=swapping_open
+            ):
+                with self.assertRaisesRegex(
+                    self.module.ComplianceError, "目录.*替换|身份.*变化"
+                ):
+                    self.module.write_evidence(root, final, {"status": "pass"})
+
+            self.assertTrue(swapped)
+            self.assertFalse(final.exists())
+            self.assertFalse((moved / final.name).exists())
+            self.assertEqual([], list(artifacts.glob(".*.tmp-*")))
+            self.assertEqual([], list(moved.glob(".*.tmp-*")))
+
+    def test_evidence_rejects_replaced_final_without_deleting_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            artifacts = root / "competition-artifacts"
+            artifacts.mkdir()
+            final = artifacts / "result.json"
+            replacement = b"replacement owned by another writer\n"
+            original_link = self.module.os.link
+            original_open = self.module.os.open
+
+            def replacing_link(
+                source,
+                destination,
+                *,
+                src_dir_fd=None,
+                dst_dir_fd=None,
+                follow_symlinks=True,
+            ):
+                original_link(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                    follow_symlinks=follow_symlinks,
+                )
+                self.module.os.unlink(destination, dir_fd=dst_dir_fd)
+                descriptor = original_open(
+                    destination,
+                    self.module.os.O_WRONLY
+                    | self.module.os.O_CREAT
+                    | self.module.os.O_EXCL
+                    | self.module.os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=dst_dir_fd,
+                )
+                try:
+                    self.module.os.write(descriptor, replacement)
+                finally:
+                    self.module.os.close(descriptor)
+
+            with mock.patch.object(
+                self.module.os, "link", side_effect=replacing_link
+            ):
+                with self.assertRaisesRegex(
+                    self.module.ComplianceError, "证据文件.*替换|身份.*变化"
+                ):
+                    self.module.write_evidence(root, final, {"status": "pass"})
+
+            self.assertEqual(replacement, final.read_bytes())
+            self.assertEqual([], list(artifacts.glob(".*.tmp-*")))
 
 
 if __name__ == "__main__":

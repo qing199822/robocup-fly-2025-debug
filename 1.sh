@@ -73,7 +73,12 @@ forward_official_sandbox_signal() {
 
     OFFICIAL_SANDBOX_PENDING_SIGNAL="$signal_name"
     if [ -n "$OFFICIAL_SANDBOX_CHILD_PID" ]; then
-        kill -s "$signal_name" "$OFFICIAL_SANDBOX_CHILD_PID" 2>/dev/null || true
+        if [ "$signal_name" = INT ]; then
+            # Async commands inherit SIGINT ignored; TERM reaches the inner cleanup trap.
+            kill -TERM "$OFFICIAL_SANDBOX_CHILD_PID" 2>/dev/null || true
+        else
+            kill -s "$signal_name" "$OFFICIAL_SANDBOX_CHILD_PID" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -206,6 +211,11 @@ ensure_official_readonly_sandbox() {
             break
         fi
     done
+    case "$OFFICIAL_SANDBOX_PENDING_SIGNAL" in
+    HUP) sandbox_status=129 ;;
+    INT) sandbox_status=130 ;;
+    TERM) sandbox_status=143 ;;
+    esac
     exec {status_fd}>&-
     trap - HUP INT TERM
     OFFICIAL_SANDBOX_CHILD_PID=""

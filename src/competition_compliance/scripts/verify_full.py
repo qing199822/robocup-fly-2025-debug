@@ -2,6 +2,7 @@
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import pathlib
@@ -11,6 +12,7 @@ import shlex
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 
 from competition_compliance.manifest import (
     load_manifest_with_digest,
@@ -96,6 +98,15 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
 )
 _CANONICAL_MANIFEST_RELATIVE = pathlib.PurePosixPath(
     "src/competition_compliance/config/official_manifest.json"
+)
+_CANONICAL_OWNERSHIP_RELATIVE = pathlib.PurePosixPath(
+    "src/competition_compliance/config/ownership.json"
+)
+_RUNTIME_ROOT_NAMES = (
+    "PX4_DIR",
+    "XTDRONE_DIR",
+    "GAZEBO_MODELS_DIR",
+    "XTDRONE_PYTHONPATH",
 )
 _REQUIRED_OFFICIAL_IDENTITIES = frozenset(
     {
@@ -224,6 +235,50 @@ def canonical_manifest_path(root, manifest_path):
     return resolved
 
 
+def canonical_ownership_path(root, ownership_path):
+    root = _resolve_root(root)
+    expected = root.joinpath(*_CANONICAL_OWNERSHIP_RELATIVE.parts)
+    declared = pathlib.Path(ownership_path)
+    if declared.is_absolute():
+        if declared != expected:
+            raise ComplianceError("必须使用仓库内唯一的规范所有权清单：{}".format(expected))
+    else:
+        raw = pathlib.PurePosixPath(str(declared))
+        if raw.as_posix() != str(declared) or raw != _CANONICAL_OWNERSHIP_RELATIVE:
+            raise ComplianceError("必须使用仓库内唯一的规范所有权清单：{}".format(expected))
+    _reject_symlink_components(root, _CANONICAL_OWNERSHIP_RELATIVE, "所有权清单")
+    try:
+        resolved = expected.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ComplianceError("无法解析规范所有权清单 {}：{}".format(expected, error)) from error
+    if resolved != expected or not resolved.is_file():
+        raise ComplianceError("规范所有权清单不得为符号链接或别名：{}".format(expected))
+    return resolved
+
+
+def canonical_runtime_roots(roots):
+    if not isinstance(roots, Mapping) or set(roots) != set(_RUNTIME_ROOT_NAMES):
+        raise ComplianceError("运行时根目录必须恰好包含四个规定名称")
+    resolved_roots = {}
+    for name in _RUNTIME_ROOT_NAMES:
+        try:
+            declared = pathlib.Path(roots[name])
+        except (TypeError, ValueError) as error:
+            raise ComplianceError("运行时根目录参数无效 {}：{}".format(name, error)) from error
+        if declared.is_symlink():
+            raise ComplianceError("运行时根目录不得为符号链接 {}：{}".format(name, declared))
+        try:
+            resolved = declared.resolve(strict=True)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ComplianceError("无法解析运行时根目录 {}：{}".format(name, error)) from error
+        if declared != resolved:
+            raise ComplianceError("运行时根目录必须使用规范绝对路径 {}：{}".format(name, declared))
+        if not resolved.is_dir():
+            raise ComplianceError("运行时根目录不是目录 {}：{}".format(name, declared))
+        resolved_roots[name] = resolved
+    return resolved_roots
+
+
 def verify_required_manifest_identities(manifest):
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
         raise ComplianceError("官方清单 files 必须为数组")
@@ -246,16 +301,40 @@ def verify_required_manifest_identities(manifest):
     )
 
 
-def build_evidence(manifest_digest, manifest, actual_versions):
+def build_evidence(
+    manifest_digest,
+    manifest,
+    actual_versions,
+    ownership_digest,
+    ownership_entries,
+    runtime_roots,
+):
     if not isinstance(manifest_digest, str) or not _HASH_PATTERN.fullmatch(
         manifest_digest
     ):
         raise ComplianceError("规范官方清单 sha256 无效")
+    if not isinstance(ownership_digest, str) or not _HASH_PATTERN.fullmatch(
+        ownership_digest
+    ):
+        raise ComplianceError("规范所有权清单 sha256 无效")
     checked = verify_required_manifest_identities(manifest)
+    classifications = sorted(
+        (
+            {"path": entry["path"], "kind": entry["kind"]}
+            for entry in ownership_entries
+        ),
+        key=lambda item: item["path"],
+    )
+    canonical_roots = canonical_runtime_roots(runtime_roots)
     return {
         "status": "pass",
         "versions": actual_versions,
         "manifest_sha256": manifest_digest,
+        "ownership_sha256": ownership_digest,
+        "package_classifications": classifications,
+        "runtime_roots": {
+            name: str(canonical_roots[name]) for name in _RUNTIME_ROOT_NAMES
+        },
         "checked_identities": checked,
         "checked_files": len(checked),
         "critical_official_files_match": True,
@@ -268,23 +347,30 @@ def build_evidence(manifest_digest, manifest, actual_versions):
     }
 
 
-def load_ownership(path):
+def load_ownership_with_digest(path):
     path = pathlib.Path(path)
     try:
-        data = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        encoded = path.read_bytes()
     except OSError as error:
         raise ComplianceError("无法读取所有权清单 {}：{}".format(path, error)) from error
+    try:
+        text = encoded.decode("utf-8")
     except UnicodeError as error:
         raise ComplianceError("所有权清单不是有效 UTF-8 {}：{}".format(path, error)) from error
+    try:
+        data = json.loads(text, object_pairs_hook=_unique_object)
     except json.JSONDecodeError as error:
         raise ComplianceError("所有权清单 JSON 格式错误 {}：{}".format(path, error)) from error
     if not isinstance(data, dict) or set(data) != {"entries"}:
         raise ComplianceError("所有权清单必须只包含 entries")
     if not isinstance(data["entries"], list):
         raise ComplianceError("所有权清单 entries 必须为数组")
-    return data["entries"]
+    return data["entries"], hashlib.sha256(encoded).hexdigest()
+
+
+def load_ownership(path):
+    entries, _digest = load_ownership_with_digest(path)
+    return entries
 
 
 def _validate_entry(entry):
@@ -374,10 +460,8 @@ def _normalized_license(value):
     return value
 
 
-def verify_ownership(root, ownership_path, xtdrone_dir=None):
+def verify_ownership_entries(root, entries, xtdrone_dir=None):
     root = _resolve_root(root)
-    ownership_file = _repository_file(root, ownership_path, "所有权清单")
-    entries = load_ownership(ownership_file)
     validated = []
     paths = set()
     for entry in entries:
@@ -447,6 +531,16 @@ def verify_ownership(root, ownership_path, xtdrone_dir=None):
                     external_root.joinpath(*external_relative.parts),
                 )
     return entries
+
+
+def verify_ownership(root, ownership_path, xtdrone_dir=None):
+    root = _resolve_root(root)
+    ownership_file = _repository_file(root, ownership_path, "所有权清单")
+    return verify_ownership_entries(
+        root,
+        load_ownership(ownership_file),
+        xtdrone_dir,
+    )
 
 
 def _tree_files(root, label):
@@ -755,8 +849,11 @@ def write_evidence(root, path, payload):
     path = validate_evidence_path(root, path)
     root_fd = None
     artifacts_fd = None
+    fresh_artifacts_fd = None
     temporary_fd = None
     temporary_name = None
+    published_name = None
+    published_identity = None
     try:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         root_fd = os.open(str(root), directory_flags)
@@ -795,6 +892,8 @@ def write_evidence(root, path, payload):
                 raise OSError(errno.EIO, "写入合规证据时未取得进展")
             view = view[written:]
         os.fsync(temporary_fd)
+        temporary_stat = os.fstat(temporary_fd)
+        temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
         os.close(temporary_fd)
         temporary_fd = None
 
@@ -810,9 +909,40 @@ def write_evidence(root, path, payload):
             raise ComplianceError(
                 "合规证据已存在，拒绝覆盖：{}".format(path)
             ) from error
+        published_name = path.name
+        published_identity = temporary_identity
+
+        try:
+            fresh_artifacts_fd = os.open(
+                "competition-artifacts", directory_flags, dir_fd=root_fd
+            )
+            held_directory = os.fstat(artifacts_fd)
+            fresh_directory = os.fstat(fresh_artifacts_fd)
+            held_final = os.stat(
+                path.name, dir_fd=artifacts_fd, follow_symlinks=False
+            )
+            fresh_final = os.stat(
+                path.name, dir_fd=fresh_artifacts_fd, follow_symlinks=False
+            )
+        except OSError as error:
+            raise ComplianceError(
+                "合规证据目录身份变化或已被替换：{}".format(path.parent)
+            ) from error
+        if (
+            (held_directory.st_dev, held_directory.st_ino)
+            != (fresh_directory.st_dev, fresh_directory.st_ino)
+            or (held_final.st_dev, held_final.st_ino) != published_identity
+            or (fresh_final.st_dev, fresh_final.st_ino) != published_identity
+        ):
+            raise ComplianceError(
+                "合规证据文件或目录身份变化，可能已被替换：{}".format(path)
+            )
+
         os.unlink(temporary_name, dir_fd=artifacts_fd)
         temporary_name = None
         os.fsync(artifacts_fd)
+        published_name = None
+        published_identity = None
     except ComplianceError:
         raise
     except OSError as error:
@@ -829,7 +959,23 @@ def write_evidence(root, path, payload):
                 os.fsync(artifacts_fd)
             except OSError:
                 pass
-        for descriptor in (artifacts_fd, root_fd):
+        if (
+            published_name is not None
+            and published_identity is not None
+            and artifacts_fd is not None
+        ):
+            try:
+                current = os.stat(
+                    published_name,
+                    dir_fd=artifacts_fd,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) == published_identity:
+                    os.unlink(published_name, dir_fd=artifacts_fd)
+                    os.fsync(artifacts_fd)
+            except OSError:
+                pass
+        for descriptor in (fresh_artifacts_fd, artifacts_fd, root_fd):
             if descriptor is not None:
                 try:
                     os.close(descriptor)
@@ -856,24 +1002,38 @@ def main():
 
     manifest_path = canonical_manifest_path(root, args.manifest)
     manifest, manifest_digest = load_manifest_with_digest(manifest_path)
-    manifest = verify_manifest_document(
-        manifest,
+    ownership_path = canonical_ownership_path(root, args.ownership)
+    ownership_entries, ownership_digest = load_ownership_with_digest(ownership_path)
+    runtime_roots = canonical_runtime_roots(
         {
             "PX4_DIR": args.px4_dir,
             "XTDRONE_DIR": args.xtdrone_dir,
             "GAZEBO_MODELS_DIR": args.gazebo_models_dir,
             "XTDRONE_PYTHONPATH": args.xtdrone_pythonpath,
-        },
+        }
+    )
+    manifest = verify_manifest_document(
+        manifest,
+        runtime_roots,
     )
     verify_required_manifest_identities(manifest)
-    actual_versions = verify_versions(manifest, args.xtdrone_dir)
-    verify_ownership(root, args.ownership, args.xtdrone_dir)
+    actual_versions = verify_versions(manifest, runtime_roots["XTDRONE_DIR"])
+    verified_ownership_entries = verify_ownership_entries(
+        root, ownership_entries, runtime_roots["XTDRONE_DIR"]
+    )
     verify_entrypoints(root)
     evidence_path = validate_evidence_path(root, args.evidence)
     write_evidence(
         root,
         evidence_path,
-        build_evidence(manifest_digest, manifest, actual_versions),
+        build_evidence(
+            manifest_digest,
+            manifest,
+            actual_versions,
+            ownership_digest,
+            verified_ownership_entries,
+            runtime_roots,
+        ),
     )
     print("完整静态合规检查通过")
 
