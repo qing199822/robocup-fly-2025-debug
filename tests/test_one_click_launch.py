@@ -60,6 +60,12 @@ class LauncherHarness:
                 "HELPER_MODE": "success",
                 "MISSION_MODE": "0",
                 "TEE_MODE": "success",
+                "SETSID_MODE": "success",
+                "STATE_MODE": "success",
+                "SIMULATION_FAIL_DELAY": "0.4",
+                "COMMUNICATION_FAIL_DELAY": "0.4",
+                "HELPER_FAIL_DELAY": "0.4",
+                "MISSION_DURATION": "3",
                 "IGNORE_TERM": "0",
                 "DISPLAY": ":99",
             }
@@ -121,6 +127,10 @@ class LauncherHarness:
             if [ "$HELPER_MODE" = fail ]; then
                 exit 31
             fi
+            if [ "$HELPER_MODE" = delayed_fail ]; then
+                sleep "$HELPER_FAIL_DELAY"
+                exit 32
+            fi
             if [ "$IGNORE_TERM" = 1 ]; then
                 trap '' TERM
             else
@@ -165,7 +175,7 @@ class LauncherHarness:
                     exit 29
                 fi
                 if [ "$COMMUNICATION_MODE" = delayed_fail ]; then
-                    sleep 0.4
+                    sleep "$COMMUNICATION_FAIL_DELAY"
                     exit 33
                 fi
                 if [ "$IGNORE_TERM" = 1 ]; then
@@ -184,7 +194,7 @@ class LauncherHarness:
             textwrap.dedent(
                 """\
                 #!/bin/bash
-                if [ "$SIMULATION_MODE" = success ]; then
+                if [ "$SIMULATION_MODE" = success ] || [ "$SIMULATION_MODE" = delayed_fail ]; then
                     echo /gazebo/get_world_properties
                     exit 0
                 fi
@@ -222,7 +232,11 @@ class LauncherHarness:
                 topic="${@: -1}"
                 case "$topic" in
                     */mavros/state)
-                        echo 'connected: True'
+                        if [ "$STATE_MODE" = sleep ]; then
+                            sleep 30
+                        else
+                            echo 'connected: True'
+                        fi
                         ;;
                     */realsense/*)
                         if [ "$CAMERA_MODE" = sleep ]; then
@@ -243,12 +257,20 @@ class LauncherHarness:
                 #!/bin/bash
                 if [ "$1" = look_up ]; then
                     touch "$STATE_DIR/mission_started"
+                    if [ "$MISSION_MODE" = sleep ]; then
+                        sleep "$MISSION_DURATION"
+                        exit 0
+                    fi
                     exit "$MISSION_MODE"
                 fi
                 touch "$STATE_DIR/simulation_started"
                 echo "$$" > "$STATE_DIR/simulation_pid"
                 if [ "$SIMULATION_MODE" = fail ]; then
                     exit 23
+                fi
+                if [ "$SIMULATION_MODE" = delayed_fail ]; then
+                    sleep "$SIMULATION_FAIL_DELAY"
+                    exit 24
                 fi
                 if [ "$IGNORE_TERM" = 1 ]; then
                     trap '' TERM
@@ -276,11 +298,33 @@ class LauncherHarness:
                     /bin/cat >/dev/null
                     exit 18
                 fi
+                if [ "$TEE_MODE" = early_exit ] && [ "$count" -ge 2 ]; then
+                    sleep 0.3
+                    exit 19
+                fi
                 if [ "$TEE_MODE" = drain ]; then
                     /bin/cat >/dev/null
                     exit 0
                 fi
                 exec /usr/bin/tee "$@"
+                """
+            ),
+            True,
+        )
+        self._write(
+            "bin/setsid",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                touch "$STATE_DIR/setsid_called"
+                echo "$$" >> "$STATE_DIR/setsid_pids"
+                if [ "$SETSID_MODE" = delay ]; then
+                    sleep 2 &
+                    delay_pid=$!
+                    echo "$delay_pid" >> "$STATE_DIR/setsid_descendant_pids"
+                    wait "$delay_pid"
+                fi
+                exec /usr/bin/setsid "$@"
                 """
             ),
             True,
@@ -311,6 +355,44 @@ class LauncherHarness:
         result.stdout = output_path.read_text(encoding="utf-8")
         return result, time.monotonic() - started
 
+    def interrupt_during_setsid(self):
+        launch_env = self.env.copy()
+        launch_env["SETSID_MODE"] = "delay"
+        output_path = self.state / "interrupt-output.txt"
+        started = time.monotonic()
+        with output_path.open("w", encoding="utf-8") as output_file:
+            process = subprocess.Popen(
+                ["bash", str(self.workspace / "1.sh"), "6", "mission_down.json"],
+                cwd=self.workspace,
+                env=launch_env,
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            deadline = time.monotonic() + 2
+            marker = self.state / "setsid_called"
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not marker.exists():
+                process.kill()
+                process.wait(timeout=1)
+                raise AssertionError("setsid stub was not reached")
+            child_pid = int((self.state / "setsid_pids").read_text().splitlines()[-1])
+            os.kill(process.pid, signal.SIGTERM)
+            timed_out = False
+            try:
+                returncode = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                returncode = process.wait(timeout=1)
+        result = subprocess.CompletedProcess(
+            process.args,
+            returncode,
+            output_path.read_text(encoding="utf-8"),
+        )
+        return result, time.monotonic() - started, timed_out, child_pid
+
     def run_tmp_exists(self):
         marker = self.state / "run_tmp"
         return marker.exists() and pathlib.Path(marker.read_text().strip()).exists()
@@ -321,6 +403,8 @@ class LauncherHarness:
             "simulation_pid",
             "communication_pids",
             "helper_pids",
+            "setsid_pids",
+            "setsid_descendant_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -338,6 +422,8 @@ class LauncherHarness:
             "simulation_pid",
             "communication_pids",
             "helper_pids",
+            "setsid_pids",
+            "setsid_descendant_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -368,7 +454,26 @@ class OneClickLaunchTest(unittest.TestCase):
         self.assertIn('kill -TERM -- "-$pid"', script)
         self.assertIn('kill -KILL -- "-$pid"', script)
         self.assertIn('CLEANUP_GRACE_SECONDS="${CLEANUP_GRACE_SECONDS:-5}"', script)
+        self.assertIn('declare -A DIRECT_FALLBACK_START_TIMES=()', script)
+        self.assertIn('direct_fallback_is_running "$pid"', script)
+        self.assertIn(
+            'if direct_fallback_is_running "$pending_unregistered"; then', script
+        )
         self.assertNotIn('kill -INT -- "-$pid"', script)
+
+    def test_owned_startup_registers_pending_pid_before_release(self):
+        script = self.script
+
+        self.assertIn('PENDING_PID=""', script)
+        self.assertIn('PENDING_PID=$!', script)
+        self.assertIn('register_owned_process "$PENDING_PID" "$name"', script)
+        self.assertIn('touch "$release_file"', script)
+        self.assertIn('kill -0 "$owner_pid"', script)
+        self.assertIn('[ ! -d "$gate_dir" ]', script)
+        self.assertLess(
+            script.index('register_owned_process "$PENDING_PID" "$name"'),
+            script.index('touch "$release_file"'),
+        )
 
     def test_mission_launch_is_owned_by_cleanup(self):
         script = self.script
@@ -584,6 +689,16 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
             [], list((self.harness.workspace / "logs/competition-clean").glob(".logger-*"))
         )
 
+    def test_logger_exit_with_open_fifo_is_controlled_and_prevents_mission(self):
+        result, elapsed = self.harness.run(TEE_MODE="early_exit", MISSION_MODE="sleep")
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertNotIn(result.returncode, (-13, 141), result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
+        self.assertFalse((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+
     def test_tee_setup_failure_is_fail_closed_before_preflight(self):
         result, elapsed = self.harness.run(TEE_MODE="setup_fail")
 
@@ -605,12 +720,32 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         self.assertFalse((self.harness.state / "mission_started").exists())
         self.assertFalse(self.harness.run_tmp_exists())
 
+    def test_simulator_state_probe_respects_ready_global_deadline(self):
+        result, elapsed = self.harness.run(
+            READY_TIMEOUT_SECONDS="1", STATE_MODE="sleep"
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 1.8, result.stdout)
+        self.assertFalse((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+
     def test_simulator_failure_propagates_without_readiness_timeout(self):
         result, elapsed = self.harness.run(SIMULATION_MODE="fail")
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertLess(elapsed, 2, result.stdout)
         self.assertIn("六机仿真", result.stdout)
+        self.assertFalse((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_simulator_death_after_readiness_prevents_mission(self):
+        result, elapsed = self.harness.run(
+            SIMULATION_MODE="delayed_fail", SIMULATION_FAIL_DELAY="0.4"
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
         self.assertFalse((self.harness.state / "mission_started").exists())
         self.assertFalse(self.harness.run_tmp_exists())
 
@@ -640,6 +775,53 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         self.assertLess(elapsed, 4, result.stdout)
         self.assertFalse((self.harness.state / "mission_started").exists())
         self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_simulator_death_during_mission_fails_the_run(self):
+        result, elapsed = self.harness.run(
+            SIMULATION_MODE="delayed_fail",
+            SIMULATION_FAIL_DELAY="1.7",
+            MISSION_MODE="sleep",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 3, result.stdout)
+        self.assertTrue((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_communication_death_during_mission_fails_the_run(self):
+        result, elapsed = self.harness.run(
+            COMMUNICATION_MODE="delayed_fail",
+            COMMUNICATION_FAIL_DELAY="1.7",
+            MISSION_MODE="sleep",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 3, result.stdout)
+        self.assertTrue((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_helper_death_during_mission_fails_the_run(self):
+        result, elapsed = self.harness.run(
+            HELPER_MODE="delayed_fail",
+            HELPER_FAIL_DELAY="1.4",
+            MISSION_MODE="sleep",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 3, result.stdout)
+        self.assertTrue((self.harness.state / "mission_started").exists())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_signal_before_process_group_creation_has_no_leak(self):
+        result, elapsed, timed_out, child_pid = self.harness.interrupt_during_setsid()
+
+        self.assertFalse(timed_out, result.stdout)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 2, result.stdout)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        self.assertFalse(self.harness.run_tmp_exists())
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
 
     def test_nonzero_mission_status_is_preserved(self):
         result, elapsed = self.harness.run(MISSION_MODE="42")

@@ -41,12 +41,17 @@ MISSION_FILE=${2:-mission_down.json}
 SIMULATION_PID=""
 COMMUNICATION_PID=""
 MISSION_PID=""
+PENDING_PID=""
 HELPER_PIDS=()
 OWNED_PIDS=()
 OWNED_PGIDS=()
+OWNED_GATE_DIRS=()
+DIRECT_FALLBACK_PIDS=()
+declare -A DIRECT_FALLBACK_START_TIMES=()
 declare -A OWNED_NAMES=()
 declare -A OWNED_REAPED=()
 declare -A OWNED_STATUSES=()
+declare -A OWNED_GROUP_ESTABLISHED=()
 LAST_STARTED_PID=""
 LAST_PROCESS_STATUS=""
 CLEANUP_DONE=false
@@ -58,6 +63,8 @@ LOGGER_PID=""
 LOGGER_FDS_SAVED=false
 LOGGER_REDIRECTED=false
 LOGGER_STARTED=false
+LOGGER_REAPED=false
+LOGGER_STATUS=0
 
 current_milliseconds() {
     date +%s%3N
@@ -120,11 +127,28 @@ validate_configuration() {
 
 process_is_running() {
     local pid="$1"
-    local state
+    local stat_line state
 
     kill -0 "$pid" 2>/dev/null || return 1
-    state="$(ps -o stat= -p "$pid" 2>/dev/null)" || return 1
-    [[ "$state" != Z* ]]
+    IFS= read -r stat_line <"/proc/$pid/stat" 2>/dev/null || return 1
+    stat_line="${stat_line##*) }"
+    state="${stat_line%% *}"
+    [ "$state" != Z ]
+}
+
+process_start_time() {
+    local pid="$1"
+    local stat_line state ppid pgrp session tty_nr tpgid flags
+    local minflt cminflt majflt cmajflt utime stime cutime cstime
+    local priority nice num_threads itrealvalue start_time remainder
+
+    IFS= read -r stat_line <"/proc/$pid/stat" 2>/dev/null || return 1
+    stat_line="${stat_line##*) }"
+    read -r state ppid pgrp session tty_nr tpgid flags \
+        minflt cminflt majflt cmajflt utime stime cutime cstime \
+        priority nice num_threads itrealvalue start_time remainder <<< "$stat_line"
+    [ -n "$start_time" ] || return 1
+    printf '%s\n' "$start_time"
 }
 
 group_is_running() {
@@ -176,7 +200,52 @@ stop_logger_bounded() {
     done
     if process_is_running "$pid"; then
         kill -KILL "$pid" 2>/dev/null || true
+        deadline=$(( $(current_milliseconds) + 500 ))
+        while process_is_running "$pid" && [ "$(current_milliseconds)" -lt "$deadline" ]; do
+            sleep_milliseconds 50
+        done
     fi
+    if process_is_running "$pid"; then
+        return 1
+    fi
+    return 0
+}
+
+reap_logger_if_exited() {
+    local status
+
+    if ! "$LOGGER_STARTED"; then
+        return 0
+    fi
+    if "$LOGGER_REAPED"; then
+        return 0
+    fi
+    if process_is_running "$LOGGER_PID"; then
+        return 1
+    fi
+    if wait "$LOGGER_PID"; then
+        status=0
+    else
+        status=$?
+    fi
+    LOGGER_REAPED=true
+    LOGGER_STATUS="$status"
+    return 0
+}
+
+check_logger_health() {
+    if ! "$LOGGER_STARTED"; then
+        return 1
+    fi
+    if ! reap_logger_if_exited; then
+        return 0
+    fi
+    if "$LOGGER_FDS_SAVED"; then
+        echo "错误：启动日志进程提前退出（状态 $LOGGER_STATUS）。" >&4
+    else
+        echo "错误：启动日志进程提前退出（状态 $LOGGER_STATUS）。" >&2
+    fi
+    return 1
 }
 
 setup_logging() {
@@ -221,11 +290,15 @@ setup_logging() {
     "$TEE_BIN" -a "$RUN_LOG" <"$LOGGER_FIFO" >&3 2>&4 &
     LOGGER_PID=$!
     LOGGER_STARTED=true
+    LOGGER_REAPED=false
+    LOGGER_STATUS=0
+    trap '' PIPE
     if ! exec 1>"$LOGGER_FIFO" 2>&1; then
         exec 1>&3 2>&4
         stop_logger_bounded "$LOGGER_PID"
-        wait "$LOGGER_PID" 2>/dev/null || true
+        reap_logger_if_exited || true
         LOGGER_STARTED=false
+        trap - PIPE
         cleanup_logger_files
         return 1
     fi
@@ -233,8 +306,9 @@ setup_logging() {
     if ! process_is_running "$LOGGER_PID"; then
         exec 1>&3 2>&4
         LOGGER_REDIRECTED=false
-        wait "$LOGGER_PID" 2>/dev/null || true
+        reap_logger_if_exited || true
         LOGGER_STARTED=false
+        trap - PIPE
         echo "错误：启动日志进程在初始化期间退出。" >&2
         cleanup_logger_files
         return 1
@@ -247,25 +321,33 @@ finish_logging() {
     local primary_status="$1"
     local logger_status=0
     local deadline
+    local logger_forced=false
 
     if "$LOGGER_REDIRECTED"; then
         exec 1>&3 2>&4
         LOGGER_REDIRECTED=false
     fi
 
-    if "$LOGGER_STARTED"; then
+    if "$LOGGER_STARTED" && ! "$LOGGER_REAPED"; then
         deadline=$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))
         while process_is_running "$LOGGER_PID" && [ "$(current_milliseconds)" -lt "$deadline" ]; do
             sleep_milliseconds 50
         done
         if process_is_running "$LOGGER_PID"; then
             echo "错误：启动日志进程未在期限内结束，正在强制停止。" >&2
-            stop_logger_bounded "$LOGGER_PID"
+            logger_forced=true
+            stop_logger_bounded "$LOGGER_PID" || logger_status=1
         fi
-        if wait "$LOGGER_PID"; then
-            logger_status=0
-        else
-            logger_status=$?
+        if ! reap_logger_if_exited; then
+            logger_status=1
+        fi
+    fi
+    if "$LOGGER_STARTED"; then
+        if [ "$logger_status" -eq 0 ]; then
+            logger_status="$LOGGER_STATUS"
+        fi
+        if "$logger_forced" && [ "$logger_status" -eq 0 ]; then
+            logger_status=1
         fi
         LOGGER_STARTED=false
     fi
@@ -275,6 +357,7 @@ finish_logging() {
         exec 3>&- 4>&-
         LOGGER_FDS_SAVED=false
     fi
+    trap - PIPE
 
     if [ "$logger_status" -ne 0 ]; then
         echo "错误：启动日志进程异常退出（状态 $logger_status）。" >&2
@@ -290,18 +373,162 @@ register_owned_process() {
     local name="$2"
 
     OWNED_PIDS+=("$pid")
-    OWNED_PGIDS+=("$pid")
     OWNED_NAMES["$pid"]="$name"
     OWNED_REAPED["$pid"]=false
+    OWNED_GROUP_ESTABLISHED["$pid"]=false
     LAST_STARTED_PID="$pid"
+}
+
+owned_group_wrapper() {
+    local owner_pid="$1"
+    local ready_file="$2"
+    local release_file="$3"
+    local acknowledged_file="$4"
+    local group_ready_file="$5"
+    local start_file="$6"
+    local command_started_file="$7"
+    local gate_dir="${ready_file%/*}"
+    shift 7
+
+    touch "$ready_file" || return 125
+    while [ ! -e "$release_file" ]; do
+        if ! kill -0 "$owner_pid" 2>/dev/null || [ ! -d "$gate_dir" ]; then
+            return 130
+        fi
+        sleep_milliseconds 10
+    done
+    touch "$acknowledged_file" || return 125
+    exec setsid bash -c '
+        group_ready_file="$1"
+        start_file="$2"
+        command_started_file="$3"
+        shift 3
+        touch "$group_ready_file" || exit 125
+        while [ ! -e "$start_file" ]; do
+            [ -d "${start_file%/*}" ] || exit 130
+            sleep 0.01
+        done
+        touch "$command_started_file" || exit 125
+        exec "$@"
+    ' -- "$group_ready_file" "$start_file" "$command_started_file" "$@"
+}
+
+cleanup_owned_gate_dir() {
+    local gate_dir="$1"
+
+    if [ -z "$RUN_TMP_DIR" ]; then
+        return 1
+    fi
+    case "$gate_dir" in
+    "$RUN_TMP_DIR"/owned-gate.*)
+        rm -f -- \
+            "$gate_dir/ready" \
+            "$gate_dir/release" \
+            "$gate_dir/acknowledged" \
+            "$gate_dir/group-ready" \
+            "$gate_dir/start" \
+            "$gate_dir/command-started"
+        rmdir -- "$gate_dir" 2>/dev/null || true
+        ;;
+    *)
+        echo "拒绝清理非本次启动创建的进程门控目录：$gate_dir" >&2
+        return 1
+        ;;
+    esac
+}
+
+cleanup_owned_gate_files() {
+    local gate_dir
+
+    for gate_dir in "${OWNED_GATE_DIRS[@]}"; do
+        cleanup_owned_gate_dir "$gate_dir" || CLEANUP_STATUS=1
+    done
 }
 
 start_owned_group() {
     local name="$1"
+    local gate_dir ready_file release_file acknowledged_file
+    local group_ready_file start_file command_started_file
+    local deadline pgid pid
     shift
 
-    setsid "$@" &
-    register_owned_process "$!" "$name"
+    if [ -z "$RUN_TMP_DIR" ]; then
+        echo "错误：无法在临时目录建立${name}进程门控。" >&2
+        return 1
+    fi
+    if ! gate_dir="$(mktemp -d "$RUN_TMP_DIR/owned-gate.XXXXXX")"; then
+        echo "错误：无法为${name}创建进程门控目录。" >&2
+        return 1
+    fi
+    OWNED_GATE_DIRS+=("$gate_dir")
+    ready_file="$gate_dir/ready"
+    release_file="$gate_dir/release"
+    acknowledged_file="$gate_dir/acknowledged"
+    group_ready_file="$gate_dir/group-ready"
+    start_file="$gate_dir/start"
+    command_started_file="$gate_dir/command-started"
+
+    owned_group_wrapper \
+        "$$" \
+        "$ready_file" "$release_file" "$acknowledged_file" \
+        "$group_ready_file" "$start_file" "$command_started_file" "$@" &
+    PENDING_PID=$!
+    pid="$PENDING_PID"
+    deadline=$(( $(current_milliseconds) + 5000 ))
+
+    while [ ! -e "$ready_file" ]; do
+        if ! process_is_running "$PENDING_PID"; then
+            wait "$PENDING_PID" 2>/dev/null || true
+            PENDING_PID=""
+            echo "错误：${name}进程门控在登记前退出。" >&2
+            return 1
+        fi
+        check_logger_health || return 1
+        if [ "$(current_milliseconds)" -ge "$deadline" ]; then
+            echo "错误：等待${name}进程门控就绪超时。" >&2
+            return 1
+        fi
+        sleep_milliseconds 10
+    done
+
+    register_owned_process "$PENDING_PID" "$name"
+    touch "$release_file" || return 1
+
+    while [ "$(current_milliseconds)" -lt "$deadline" ]; do
+        if ! process_is_running "$pid"; then
+            reap_if_exited "$pid" || true
+            echo "错误：${name}在进程组建立前退出（状态 $LAST_PROCESS_STATUS）。" >&2
+            return 1
+        fi
+        check_logger_health || return 1
+        pgid="$(ps -o pgid= -p "$pid" 2>/dev/null)"
+        pgid="${pgid//[[:space:]]/}"
+        if [ -e "$acknowledged_file" ] && [ -e "$group_ready_file" ] && [ "$pgid" = "$pid" ]; then
+            OWNED_GROUP_ESTABLISHED["$pid"]=true
+            OWNED_PGIDS+=("$pid")
+            PENDING_PID=""
+            touch "$start_file" || return 1
+            while [ ! -e "$command_started_file" ]; do
+                if ! process_is_running "$pid"; then
+                    reap_if_exited "$pid" || true
+                    echo "错误：${name}未能执行启动命令（状态 $LAST_PROCESS_STATUS）。" >&2
+                    return 1
+                fi
+                check_logger_health || return 1
+                if [ "$(current_milliseconds)" -ge "$deadline" ]; then
+                    echo "错误：等待${name}启动命令执行超时。" >&2
+                    return 1
+                fi
+                sleep_milliseconds 10
+            done
+            cleanup_owned_gate_dir "$gate_dir" || return 1
+            return 0
+        fi
+        sleep_milliseconds 10
+    done
+
+    echo "错误：${name}未能在期限内建立独立进程组。" >&2
+    return 1
 }
 
 reap_if_exited() {
@@ -356,8 +583,114 @@ report_early_exit() {
     return 0
 }
 
+check_owned_dependency() {
+    local pid="$1"
+    local context="$2"
+    local allow_live_group_after_zero="$3"
+    local status
+
+    if ! reap_if_exited "$pid"; then
+        return 0
+    fi
+    status="$LAST_PROCESS_STATUS"
+    if "$allow_live_group_after_zero" && [ "$status" -eq 0 ] \
+        && [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ] \
+        && group_is_running "$pid"; then
+        return 0
+    fi
+    echo "错误：${OWNED_NAMES[$pid]}在${context}期间退出（状态 $status）。" >&2
+    return 1
+}
+
+check_required_processes() {
+    local context="$1"
+    local pid
+
+    check_logger_health || return 1
+    if [ -n "$SIMULATION_PID" ]; then
+        check_owned_dependency "$SIMULATION_PID" "$context" false || return 1
+    fi
+    if [ -n "$COMMUNICATION_PID" ]; then
+        check_owned_dependency "$COMMUNICATION_PID" "$context" false || return 1
+    fi
+    for pid in "${HELPER_PIDS[@]}"; do
+        check_owned_dependency "$pid" "$context" true || return 1
+    done
+    return 0
+}
+
+owned_target_is_running() {
+    local pid="$1"
+
+    if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
+        group_is_running "$pid"
+    else
+        process_is_running "$pid"
+    fi
+}
+
+collect_direct_process_tree() {
+    local root_pid="$1"
+    local child start_time
+
+    start_time="$(process_start_time "$root_pid")" || return
+    if [ -z "${DIRECT_FALLBACK_START_TIMES[$root_pid]+tracked}" ]; then
+        DIRECT_FALLBACK_START_TIMES["$root_pid"]="$start_time"
+        DIRECT_FALLBACK_PIDS+=("$root_pid")
+    elif [ "${DIRECT_FALLBACK_START_TIMES[$root_pid]}" != "$start_time" ]; then
+        return
+    fi
+    for child in $(ps -eo pid=,ppid= 2>/dev/null \
+        | awk -v parent="$root_pid" '$2 == parent { print $1 }'); do
+        collect_direct_process_tree "$child"
+    done
+}
+
+direct_fallback_is_running() {
+    local pid="$1"
+    local current_start_time expected_start_time
+
+    expected_start_time="${DIRECT_FALLBACK_START_TIMES[$pid]:-}"
+    [ -n "$expected_start_time" ] || return 1
+    process_is_running "$pid" || return 1
+    current_start_time="$(process_start_time "$pid")" || return 1
+    [ "$current_start_time" = "$expected_start_time" ]
+}
+
+signal_direct_process_tree() {
+    local signal="$1"
+    local root_pid="$2"
+    local first_index index pid
+
+    first_index="${#DIRECT_FALLBACK_PIDS[@]}"
+    collect_direct_process_tree "$root_pid"
+    for ((index=${#DIRECT_FALLBACK_PIDS[@]} - 1; index >= first_index; index--)); do
+        pid="${DIRECT_FALLBACK_PIDS[$index]}"
+        if direct_fallback_is_running "$pid"; then
+            kill "-$signal" "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
+signal_owned_target() {
+    local signal="$1"
+    local pid="$2"
+
+    if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
+        if group_is_running "$pid"; then
+            if [ "$signal" = TERM ]; then
+                kill -TERM -- "-$pid" 2>/dev/null || true
+            else
+                kill -KILL -- "-$pid" 2>/dev/null || true
+            fi
+        fi
+    elif process_is_running "$pid"; then
+        signal_direct_process_tree "$signal" "$pid"
+    fi
+}
+
 cleanup() {
-    local index pid deadline active
+    local index pid deadline active pending_unregistered
 
     if "$CLEANUP_DONE"; then
         return "$CLEANUP_STATUS"
@@ -368,18 +701,34 @@ cleanup() {
     echo
     echo "正在停止本脚本启动的节点..."
 
-    for ((index=${#OWNED_PGIDS[@]} - 1; index >= 0; index--)); do
-        pid="${OWNED_PGIDS[$index]}"
-        if group_is_running "$pid"; then
-            kill -TERM -- "-$pid" 2>/dev/null || true
+    pending_unregistered=""
+    if [ -n "$PENDING_PID" ] && [ -z "${OWNED_NAMES[$PENDING_PID]+registered}" ]; then
+        pending_unregistered="$PENDING_PID"
+        if process_is_running "$pending_unregistered"; then
+            signal_direct_process_tree TERM "$pending_unregistered"
         fi
+    fi
+
+    for ((index=${#OWNED_PIDS[@]} - 1; index >= 0; index--)); do
+        pid="${OWNED_PIDS[$index]}"
+        signal_owned_target TERM "$pid"
     done
 
     deadline=$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
         active=false
-        for pid in "${OWNED_PGIDS[@]}"; do
-            if group_is_running "$pid"; then
+        if [ -n "$pending_unregistered" ] \
+            && direct_fallback_is_running "$pending_unregistered"; then
+            active=true
+        fi
+        for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+            if direct_fallback_is_running "$pid"; then
+                active=true
+                break
+            fi
+        done
+        for pid in "${OWNED_PIDS[@]}"; do
+            if owned_target_is_running "$pid"; then
                 active=true
                 break
             fi
@@ -390,18 +739,33 @@ cleanup() {
         sleep_milliseconds 50
     done
 
-    for pid in "${OWNED_PGIDS[@]}"; do
-        if group_is_running "$pid"; then
+    for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+        if direct_fallback_is_running "$pid"; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+    for pid in "${OWNED_PIDS[@]}"; do
+        if owned_target_is_running "$pid"; then
             echo "进程组 ${OWNED_NAMES[$pid]} 未响应 TERM，发送 KILL。" >&2
-            kill -KILL -- "-$pid" 2>/dev/null || true
+            signal_owned_target KILL "$pid"
         fi
     done
 
     deadline=$(( $(current_milliseconds) + 1000 ))
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
         active=false
-        for pid in "${OWNED_PGIDS[@]}"; do
-            if group_is_running "$pid"; then
+        if [ -n "$pending_unregistered" ] \
+            && direct_fallback_is_running "$pending_unregistered"; then
+            active=true
+        fi
+        for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+            if direct_fallback_is_running "$pid"; then
+                active=true
+                break
+            fi
+        done
+        for pid in "${OWNED_PIDS[@]}"; do
+            if owned_target_is_running "$pid"; then
                 active=true
                 break
             fi
@@ -410,6 +774,19 @@ cleanup() {
             break
         fi
         sleep_milliseconds 50
+    done
+
+    for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+        if direct_fallback_is_running "$pid"; then
+            echo "错误：直接清理的进程未在期限内退出（PID $pid）。" >&2
+            CLEANUP_STATUS=1
+        fi
+    done
+    for pid in "${OWNED_PGIDS[@]}"; do
+        if group_is_running "$pid"; then
+            echo "错误：进程组 ${OWNED_NAMES[$pid]} 未在清理期限内退出。" >&2
+            CLEANUP_STATUS=1
+        fi
     done
 
     for pid in "${OWNED_PIDS[@]}"; do
@@ -418,6 +795,17 @@ cleanup() {
             CLEANUP_STATUS=1
         fi
     done
+
+    if [ -n "$pending_unregistered" ]; then
+        if direct_fallback_is_running "$pending_unregistered"; then
+            echo "错误：无法在清理期限内回收未登记进程（PID $pending_unregistered）。" >&2
+            CLEANUP_STATUS=1
+        else
+            wait "$pending_unregistered" 2>/dev/null || true
+        fi
+    fi
+    PENDING_PID=""
+    cleanup_owned_gate_files
 
     if [ -n "$RUN_TMP_DIR" ]; then
         case "$RUN_TMP_DIR" in
@@ -480,18 +868,33 @@ project_simulator_running() {
 }
 
 all_vehicles_ready() {
+    local deadline="$1"
     local topic_list
-    local id state_topic pose_topic
+    local id state_topic pose_topic now remaining probe_milliseconds probe_timeout
 
+    check_required_processes "仿真就绪检查" || return 1
     rosservice list 2>/dev/null | grep -qx '/gazebo/get_world_properties' || return 1
     topic_list="$(rostopic list 2>/dev/null)" || return 1
 
     for id in $(seq 0 5); do
+        check_required_processes "仿真就绪检查" || return 1
         state_topic="/typhoon_h480_${id}/mavros/state"
         pose_topic="/typhoon_h480_${id}/mavros/local_position/pose"
 
         grep -qx "$pose_topic" <<< "$topic_list" || return 1
-        timeout 2s rostopic echo -n 1 "$state_topic" 2>/dev/null | grep -q 'connected: True' || return 1
+        now="$(current_milliseconds)"
+        remaining=$((deadline - now))
+        if [ "$remaining" -le 0 ]; then
+            return 1
+        fi
+        probe_milliseconds=2000
+        if [ "$remaining" -lt "$probe_milliseconds" ]; then
+            probe_milliseconds="$remaining"
+        fi
+        printf -v probe_timeout '%d.%03ds' \
+            "$((probe_milliseconds / 1000))" "$((probe_milliseconds % 1000))"
+        timeout "$probe_timeout" rostopic echo -n 1 "$state_topic" 2>/dev/null \
+            | grep -q 'connected: True' || return 1
     done
 }
 
@@ -501,13 +904,9 @@ wait_for_simulator() {
 
     echo "等待 Gazebo、PX4 和六个 MAVROS 实例连接（最长 ${READY_TIMEOUT_SECONDS} 秒）..."
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
-        if report_early_exit "$SIMULATION_PID" "六机仿真"; then
-            return 1
-        fi
-        if all_vehicles_ready; then
-            if report_early_exit "$SIMULATION_PID" "六机仿真"; then
-                return 1
-            fi
+        check_required_processes "仿真就绪检查" || return 1
+        if all_vehicles_ready "$deadline"; then
+            check_required_processes "仿真就绪检查" || return 1
             echo "六架无人机均已连接，开始启动任务节点。"
             return 0
         fi
@@ -538,18 +937,15 @@ wait_for_communication() {
 
     echo "等待六个 XTDrone 通信节点就绪（最长 ${COMMUNICATION_TIMEOUT_SECONDS} 秒）..."
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
-        if report_early_exit "$COMMUNICATION_PID" "XTDrone 通信桥"; then
-            return 1
-        fi
+        check_required_processes "通信节点就绪检查" || return 1
         if all_communication_nodes_ready; then
             echo "六个 XTDrone 通信节点均已就绪。"
             warmup_deadline=$(( $(current_milliseconds) + OFFBOARD_WARMUP_SECONDS * 1000 ))
             while [ "$(current_milliseconds)" -lt "$warmup_deadline" ]; do
-                if report_early_exit "$COMMUNICATION_PID" "XTDrone 通信桥"; then
-                    return 1
-                fi
+                check_required_processes "通信节点预热" || return 1
                 sleep_until_deadline "$warmup_deadline" 100
             done
+            check_required_processes "通信节点预热" || return 1
             return 0
         fi
         sleep_until_deadline "$deadline" 200
@@ -568,6 +964,7 @@ all_cameras_ready() {
             "/typhoon_h480_${id}/realsense/depth_camera/color/image_raw" \
             "/typhoon_h480_${id}/realsense/depth_camera/depth/image_raw" \
             "/typhoon_h480_${id}/realsense/depth_camera/color/camera_info"; do
+            check_required_processes "Realsense 就绪检查" || return 1
             now="$(current_milliseconds)"
             remaining=$((deadline - now))
             if [ "$remaining" -le 0 ]; then
@@ -590,7 +987,9 @@ wait_for_cameras() {
 
     echo "等待六组 Realsense 彩色图、深度图和 CameraInfo（最长 ${CAMERA_TIMEOUT_SECONDS} 秒）..."
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
+        check_required_processes "Realsense 就绪检查" || return 1
         if all_cameras_ready "$deadline"; then
+            check_required_processes "Realsense 就绪检查" || return 1
             echo "六组 Realsense 话题均已就绪。"
             return 0
         fi
@@ -606,7 +1005,7 @@ start_communication() {
     local bridge_script="$2"
 
     echo "启动六机 XTDrone 通信桥..."
-    setsid bash -c '
+    start_owned_group "XTDrone 通信桥" bash -c '
         pids=()
         for id in $(seq 0 5); do
             "$1" "$2" typhoon_h480 "$id" &
@@ -624,10 +1023,8 @@ start_communication() {
             status=1
         fi
         exit "$status"
-    ' -- "$python_bin" "$bridge_script" &
-    register_owned_process "$!" "XTDrone 通信桥"
+    ' -- "$python_bin" "$bridge_script" || return 1
     COMMUNICATION_PID="$LAST_STARTED_PID"
-    HELPER_PIDS+=("$COMMUNICATION_PID")
 }
 
 start_helper() {
@@ -636,33 +1033,37 @@ start_helper() {
     local title="$3"
 
     echo "启动${title}..."
-    start_owned_group "$title" bash -c 'cd "$1" && exec bash "./$2"' -- "$directory" "$script_name"
+    start_owned_group "$title" bash -c 'cd "$1" && exec bash "./$2"' \
+        -- "$directory" "$script_name" || return 1
     HELPER_PIDS+=("$LAST_STARTED_PID")
 }
 
 wait_for_helpers_survival() {
-    local deadline pid status
+    local deadline
     deadline=$(( $(current_milliseconds) + HELPER_SURVIVAL_SECONDS * 1000 ))
 
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
-        if report_early_exit "$COMMUNICATION_PID" "XTDrone 通信桥"; then
-            return 1
-        fi
-        for pid in "${HELPER_PIDS[@]}"; do
-            if [ "$pid" = "$COMMUNICATION_PID" ]; then
-                continue
-            fi
-            if reap_if_exited "$pid"; then
-                status="$LAST_PROCESS_STATUS"
-                if [ "$status" -ne 0 ] || ! group_is_running "$pid"; then
-                    echo "错误：${OWNED_NAMES[$pid]}在任务启动前退出（状态 $status）。" >&2
-                    return 1
-                fi
-            fi
-        done
+        check_required_processes "辅助节点存活检查" || return 1
         sleep_until_deadline "$deadline" 100
     done
+    check_required_processes "辅助节点存活检查" || return 1
     return 0
+}
+
+supervise_mission() {
+    local mission_status
+
+    while :; do
+        check_required_processes "任务运行" || return 1
+        if reap_if_exited "$MISSION_PID"; then
+            wait_for_owned_process "$MISSION_PID"
+            mission_status="$LAST_PROCESS_STATUS"
+            check_required_processes "任务退出确认" || return 1
+            LAST_PROCESS_STATUS="$mission_status"
+            return 0
+        fi
+        sleep_milliseconds 100
+    done
 }
 
 main() {
@@ -744,25 +1145,27 @@ main() {
     echo "============================================"
 
     echo "启动 Gazebo、PX4 SITL 和 MAVROS..."
-    start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" model_file:="$GENERATED_MODEL"
+    start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" model_file:="$GENERATED_MODEL" || return 1
     SIMULATION_PID="$LAST_STARTED_PID"
 
     wait_for_simulator || return 1
 
-    start_communication "$XTDRONE_PYTHON" "$XTDRONE_DIR/communication/multirotor_communication.py"
+    start_communication "$XTDRONE_PYTHON" \
+        "$XTDRONE_DIR/communication/multirotor_communication.py" || return 1
     wait_for_communication || return 1
 
     wait_for_cameras || return 1
 
-    start_helper "$WORKSPACE_DIR/src/yolo" "multi_yolo_detecting.sh" "YOLO 检测"
-    start_helper "$WORKSPACE_DIR/src/yolo" "multi_solving.sh" "坐标计算"
+    start_helper "$WORKSPACE_DIR/src/yolo" "multi_yolo_detecting.sh" "YOLO 检测" || return 1
+    start_helper "$WORKSPACE_DIR/src/yolo" "multi_solving.sh" "坐标计算" || return 1
     wait_for_helpers_survival || return 1
+    check_required_processes "任务启动前检查" || return 1
 
     echo "启动 down_resume 任务节点..."
     start_owned_group "任务节点" roslaunch look_up down_resume.launch \
-        num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE"
+        num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE" || return 1
     MISSION_PID="$LAST_STARTED_PID"
-    wait_for_owned_process "$MISSION_PID"
+    supervise_mission || return 1
     mission_status="$LAST_PROCESS_STATUS"
     if [ "$mission_status" -ne 0 ]; then
         echo "错误：down_resume 任务节点退出（状态 $mission_status）。" >&2
