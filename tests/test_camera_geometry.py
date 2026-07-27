@@ -102,13 +102,17 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         cls.tree = ast.parse(cls.source)
 
     @classmethod
-    def function_source(cls, function_name):
-        node = next(
+    def function_node(cls, function_name):
+        return next(
             node
             for node in ast.walk(cls.tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == function_name
         )
+
+    @classmethod
+    def function_source(cls, function_name):
+        node = cls.function_node(function_name)
         lines = cls.source.splitlines()
         return "\n".join(lines[node.lineno - 1 : node.end_lineno])
 
@@ -129,7 +133,9 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         loader = self.function_source("_load_ros_params")
 
         self.assertIn("self.latest_camera_info = None", initializer)
-        self.assertIn("self.latest_depth_stamp = None", initializer)
+        self.assertIn("self.latest_depth_sample = None", initializer)
+        self.assertNotIn("self.latest_depth_frame", self.source)
+        self.assertNotIn("self.latest_depth_stamp", self.source)
         self.assertIn('rospy.get_param("~camera_frame", "")', loader)
         self.assertIn('rospy.get_param("~maximum_sensor_delta", 0.15)', loader)
         self.assertIn("math.isfinite", loader)
@@ -150,29 +156,94 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         self.assertIn("math.isfinite", callback)
         self.assertIn("self.latest_camera_info = message", callback)
 
-    def test_depth_and_detection_callbacks_enforce_sensor_freshness(self):
+    def test_depth_callback_publishes_frame_and_stamp_as_one_sample(self):
         depth_callback = self.function_source("_depth_image_callback")
-        detection_callback = self.function_source("bounding_box_callback")
 
-        self.assertIn("self.latest_depth_stamp = image_msg.header.stamp", depth_callback)
-        self.assertGreaterEqual(depth_callback.count("self.latest_depth_stamp = None"), 1)
-        self.assertIn("self.latest_depth_stamp is None", detection_callback)
-        self.assertIn("self.latest_camera_info is None", detection_callback)
-        self.assertIn("self.latest_camera_info.width", detection_callback)
-        self.assertIn("self.latest_camera_info.height", detection_callback)
+        self.assertIn("converted_frame = self.cv_bridge.imgmsg_to_cv2", depth_callback)
+        self.assertIn(
+            "self.latest_depth_sample = (converted_frame, image_msg.header.stamp)",
+            depth_callback,
+        )
+        self.assertIn("self.latest_depth_sample = None", depth_callback)
+
+    def test_detection_callback_snapshots_each_sensor_input_once_at_entry(self):
+        callback_node = self.function_node("bounding_box_callback")
+        detection_callback = self.function_source("bounding_box_callback")
+        executable_body = callback_node.body
+        if (
+            executable_body
+            and isinstance(executable_body[0], ast.Expr)
+            and isinstance(executable_body[0].value, ast.Str)
+        ):
+            executable_body = executable_body[1:]
+
+        first_assignment, second_assignment = executable_body[:2]
+        self.assertIsInstance(first_assignment, ast.Assign)
+        self.assertIsInstance(second_assignment, ast.Assign)
+        self.assertEqual("depth_sample", first_assignment.targets[0].id)
+        self.assertEqual("latest_depth_sample", first_assignment.value.attr)
+        self.assertEqual("camera_info", second_assignment.targets[0].id)
+        self.assertEqual("latest_camera_info", second_assignment.value.attr)
+        self.assertEqual(1, detection_callback.count("self.latest_depth_sample"))
+        self.assertEqual(1, detection_callback.count("self.latest_camera_info"))
+        self.assertIn("depth_frame, depth_stamp = depth_sample", detection_callback)
+        self.assertIn("camera_info.width", detection_callback)
+        self.assertIn("camera_info.height", detection_callback)
         self.assertIn("detections_msg.header.stamp", detection_callback)
         self.assertIn("timestamps_within", detection_callback)
         self.assertIn("self.maximum_sensor_delta", detection_callback)
         self.assertIn("rospy.logwarn_throttle", detection_callback)
 
-    def test_point_uses_camera_info_frame_and_exact_depth_stamp(self):
+    def test_zero_stamps_are_rejected_before_timestamp_matching(self):
+        callback_node = self.function_node("bounding_box_callback")
+        detection_callback = self.function_source("bounding_box_callback")
+        zero_stamp_if = next(
+            node
+            for node in ast.walk(callback_node)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.BoolOp)
+            and isinstance(node.test.op, ast.Or)
+            and "depth_stamp.is_zero()" in ast.get_source_segment(self.source, node.test)
+            and "detections_msg.header.stamp.is_zero()"
+            in ast.get_source_segment(self.source, node.test)
+        )
+
+        zero_stamp_source = ast.get_source_segment(self.source, zero_stamp_if)
+        timestamp_call_position = detection_callback.index("timestamps_within")
+        zero_check_position = detection_callback.index("depth_stamp.is_zero()")
+        self.assertIn("rospy.logwarn_throttle", zero_stamp_source)
+        self.assertTrue(any(isinstance(node, ast.Return) for node in zero_stamp_if.body))
+        self.assertLess(zero_check_position, timestamp_call_position)
+
+    def test_roi_and_point_helpers_only_use_snapshotted_sensor_inputs(self):
+        roi_source = self.function_source("_get_roi_mean_depth")
         calculation = self.function_source("_calculate_3d_point")
 
+        self.assertIn("def _get_roi_mean_depth(self, depth_frame, u, v)", roi_source)
+        self.assertIn("depth_frame.shape", roi_source)
+        self.assertNotIn("self.latest_", roi_source)
+        self.assertIn(
+            "def _calculate_3d_point(self, u, v, depth_in_meters, camera_info, depth_stamp)",
+            calculation,
+        )
         self.assertIn("deproject_pixel", calculation)
-        self.assertIn("self.latest_camera_info.K", calculation)
-        self.assertIn("self.latest_camera_info.header.frame_id", calculation)
+        self.assertIn("camera_info.K", calculation)
+        self.assertIn("camera_info.header.frame_id", calculation)
         self.assertIn("self.camera_frame_override", calculation)
-        self.assertIn("point.header.stamp = self.latest_depth_stamp", calculation)
+        self.assertIn("point.header.stamp = depth_stamp", calculation)
+        self.assertNotIn("self.latest_", calculation)
+
+        detection_callback = self.function_source("bounding_box_callback")
+        self.assertIn(
+            "self._get_roi_mean_depth(depth_frame, center_u, center_v)",
+            detection_callback,
+        )
+        self.assertIn(
+            "self._calculate_3d_point(\n"
+            "                        center_u, center_v, mean_depth, camera_info, depth_stamp\n"
+            "                    )",
+            detection_callback,
+        )
 
     def test_old_intrinsics_and_default_frame_are_absent(self):
         for forbidden in (
