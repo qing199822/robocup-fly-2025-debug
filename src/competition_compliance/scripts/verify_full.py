@@ -108,6 +108,37 @@ _RUNTIME_ROOT_NAMES = (
     "GAZEBO_MODELS_DIR",
     "XTDRONE_PYTHONPATH",
 )
+_REQUIRED_THIRD_PARTY_PROVENANCE = {
+    "src/darknet_ros_msgs": {
+        "source": "https://github.com/leggedrobotics/darknet_ros",
+        "version": "1.1.4",
+        "package_version": "1.1.4",
+        "license": "BSD",
+        "strategy": "complete-hash-map",
+    },
+    "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin": {
+        "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin",
+        "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11",
+        "package_version": "1.0.0",
+        "license": "Apache-2.0",
+        "strategy": "external-tree",
+        "external_path": (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/"
+            "gazebo_ros_actor_cmd_plugin"
+        ),
+    },
+    "src/gazebo_ros_actor_plugin/gazebo_ros_actor_cmd_plugin_msgs": {
+        "source": "XTDrone/sitl_config/gazebo_plugin/gazebo_ros_actor_plugin",
+        "version": "XTDrone 8e88116dc15a19e5eba06300897fcfec4ab2da11",
+        "package_version": "1.0.0",
+        "license": "Apache-2.0",
+        "strategy": "external-tree",
+        "external_path": (
+            "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/"
+            "gazebo_ros_actor_cmd_plugin_msgs"
+        ),
+    },
+}
 _REQUIRED_OFFICIAL_IDENTITIES = frozenset(
     {
         ("PX4_DIR", "Tools/sitl_gazebo/models/typhoon_h480/typhoon_h480.sdf"),
@@ -533,6 +564,49 @@ def verify_ownership_entries(root, entries, xtdrone_dir=None):
     return entries
 
 
+def verify_competition_ownership_boundary(entries):
+    if not isinstance(entries, list):
+        raise ComplianceError("比赛所有权清单 entries 必须为数组")
+    by_path = {
+        entry.get("path"): entry
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+    }
+    actual_third_party = {
+        path for path, entry in by_path.items() if entry.get("kind") == "third-party"
+    }
+    expected_third_party = set(_REQUIRED_THIRD_PARTY_PROVENANCE)
+    if actual_third_party != expected_third_party:
+        raise ComplianceError(
+            "比赛第三方边界不一致：必须且只能声明 {}".format(
+                sorted(expected_third_party)
+            )
+        )
+    for path, expected in _REQUIRED_THIRD_PARTY_PROVENANCE.items():
+        entry = by_path[path]
+        if any(
+            entry.get(field) != expected[field]
+            for field in ("source", "version", "package_version", "license")
+        ):
+            raise ComplianceError("比赛第三方来源声明不一致：{}".format(path))
+        verification = entry.get("verification")
+        if (
+            not isinstance(verification, dict)
+            or verification.get("strategy") != expected["strategy"]
+            or (
+                "external_path" in expected
+                and verification.get("external_path") != expected["external_path"]
+            )
+        ):
+            raise ComplianceError("比赛第三方来源声明不一致：{}".format(path))
+    return entries
+
+
+def verify_competition_ownership_entries(root, entries, xtdrone_dir=None):
+    verify_competition_ownership_boundary(entries)
+    return verify_ownership_entries(root, entries, xtdrone_dir)
+
+
 def verify_ownership(root, ownership_path, xtdrone_dir=None):
     root = _resolve_root(root)
     ownership_file = _repository_file(root, ownership_path, "所有权清单")
@@ -912,6 +986,10 @@ def write_evidence(root, path, payload):
         published_name = path.name
         published_identity = temporary_identity
 
+        os.unlink(temporary_name, dir_fd=artifacts_fd)
+        temporary_name = None
+        os.fsync(artifacts_fd)
+
         try:
             fresh_artifacts_fd = os.open(
                 "competition-artifacts", directory_flags, dir_fd=root_fd
@@ -938,9 +1016,6 @@ def write_evidence(root, path, payload):
                 "合规证据文件或目录身份变化，可能已被替换：{}".format(path)
             )
 
-        os.unlink(temporary_name, dir_fd=artifacts_fd)
-        temporary_name = None
-        os.fsync(artifacts_fd)
         published_name = None
         published_identity = None
     except ComplianceError:
@@ -1018,7 +1093,7 @@ def main():
     )
     verify_required_manifest_identities(manifest)
     actual_versions = verify_versions(manifest, runtime_roots["XTDRONE_DIR"])
-    verified_ownership_entries = verify_ownership_entries(
+    verified_ownership_entries = verify_competition_ownership_entries(
         root, ownership_entries, runtime_roots["XTDRONE_DIR"]
     )
     verify_entrypoints(root)

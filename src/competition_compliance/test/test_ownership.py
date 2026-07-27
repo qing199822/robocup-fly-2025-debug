@@ -237,6 +237,62 @@ class OwnershipVerifierTest(unittest.TestCase):
             entries = self.module.verify_ownership(root, ownership)
             self.assertEqual(["src/example"], [entry["path"] for entry in entries])
 
+    def test_competition_ownership_rejects_all_team_classification(self):
+        canonical = json.loads(OWNERSHIP.read_text(encoding="utf-8"))["entries"]
+        all_team = []
+        for entry in canonical:
+            if entry["kind"] == "team":
+                all_team.append(entry)
+            else:
+                all_team.append(
+                    {
+                        "path": entry["path"],
+                        "kind": "team",
+                        "source": "this repository",
+                        "version": entry["package_version"],
+                        "license": entry["license"],
+                    }
+                )
+        with self.assertRaisesRegex(
+            self.module.ComplianceError, "比赛.*第三方|第三方.*边界"
+        ):
+            self.module.verify_competition_ownership_entries(ROOT, all_team, XTDRONE)
+
+    def test_competition_third_party_provenance_is_exact(self):
+        canonical = json.loads(OWNERSHIP.read_text(encoding="utf-8"))["entries"]
+        third_party_index = next(
+            index
+            for index, entry in enumerate(canonical)
+            if entry["path"] == "src/darknet_ros_msgs"
+        )
+        original = canonical[third_party_index]
+        mutations = (
+            {**original, "source": "https://example.invalid/forged"},
+            {**original, "version": "forged"},
+            {**original, "package_version": "9.9.9"},
+            {**original, "license": "MIT"},
+            {
+                **original,
+                "verification": {
+                    "strategy": "external-tree",
+                    "external_path": (
+                        "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin/"
+                        "gazebo_ros_actor_cmd_plugin"
+                    ),
+                },
+            },
+        )
+        for mutation in mutations:
+            with self.subTest(field=mutation):
+                entries = list(canonical)
+                entries[third_party_index] = mutation
+                with self.assertRaisesRegex(
+                    self.module.ComplianceError, "比赛.*第三方.*来源"
+                ):
+                    self.module.verify_competition_ownership_entries(
+                        ROOT, entries, XTDRONE
+                    )
+
     def test_duplicate_json_keys_and_duplicate_entry_paths_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -983,6 +1039,49 @@ class OwnershipVerifierTest(unittest.TestCase):
 
             self.assertEqual(replacement, final.read_bytes())
             self.assertEqual([], list(artifacts.glob(".*.tmp-*")))
+
+    def test_evidence_checks_path_identity_after_last_publication_mutation(self):
+        for mutation in ("directory", "final"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                artifacts = root / "competition-artifacts"
+                artifacts.mkdir()
+                moved = root / "moved-artifacts"
+                final = artifacts / "result.json"
+                replacement = b"replacement after initial identity check\n"
+                original_unlink = self.module.os.unlink
+                mutated = False
+
+                def mutating_unlink(path, *, dir_fd=None):
+                    nonlocal mutated
+                    if (
+                        not mutated
+                        and isinstance(path, str)
+                        and path.startswith(".result.json.tmp-")
+                    ):
+                        if mutation == "directory":
+                            artifacts.rename(moved)
+                            artifacts.mkdir()
+                        else:
+                            original_unlink(final.name, dir_fd=dir_fd)
+                        final.write_bytes(replacement)
+                        mutated = True
+                    return original_unlink(path, dir_fd=dir_fd)
+
+                with mock.patch.object(
+                    self.module.os, "unlink", side_effect=mutating_unlink
+                ):
+                    with self.assertRaisesRegex(
+                        self.module.ComplianceError, "身份.*变化|已被替换"
+                    ):
+                        self.module.write_evidence(root, final, {"status": "pass"})
+
+                self.assertTrue(mutated)
+                self.assertEqual(replacement, final.read_bytes())
+                if mutation == "directory":
+                    self.assertFalse((moved / final.name).exists())
+                    self.assertEqual([], list(moved.glob(".*.tmp-*")))
+                self.assertEqual([], list(artifacts.glob(".*.tmp-*")))
 
 
 if __name__ == "__main__":
