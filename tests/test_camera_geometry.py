@@ -6,13 +6,22 @@ import pathlib
 import sys
 import unittest
 
+import numpy as np
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YOLO_DIR = ROOT / "src" / "yolo"
 NODE_PATH = YOLO_DIR / "bbox2coord_node.py"
 sys.path.insert(0, str(YOLO_DIR))
 
-from camera_geometry import deproject_pixel, timestamps_within
+from camera_geometry import (
+    DepthSample,
+    deproject_pixel,
+    depth_image_to_meters,
+    roi_mean_depth,
+    select_closest_depth_sample,
+    timestamps_within,
+)
 
 
 class CameraGeometryTest(unittest.TestCase):
@@ -70,6 +79,8 @@ class CameraGeometryTest(unittest.TestCase):
             (math.nan, 240, 1.0),
             (320, math.inf, 1.0),
             (320, 240, -math.inf),
+            (320, 240, 0.0),
+            (320, 240, -0.01),
             ("bad", 240, 1.0),
         ):
             with self.subTest(u=u, v=v, depth=depth):
@@ -93,6 +104,114 @@ class CameraGeometryTest(unittest.TestCase):
             with self.subTest(first=first, second=second, maximum=maximum):
                 with self.assertRaises(ValueError):
                     timestamps_within(first, second, maximum)
+
+
+class DepthImageConversionTest(unittest.TestCase):
+    def test_32fc1_is_copied_without_changing_meter_values(self):
+        source = np.array([[0.05, 0.1], [1.25, math.nan]], dtype=np.float32)
+
+        converted = depth_image_to_meters(source, "32FC1")
+        source[0, 0] = 99.0
+
+        self.assertAlmostEqual(0.05, float(converted[0, 0]))
+        self.assertAlmostEqual(0.1, float(converted[0, 1]))
+        self.assertAlmostEqual(1.25, float(converted[1, 0]))
+        self.assertTrue(math.isnan(float(converted[1, 1])))
+        self.assertFalse(np.shares_memory(source, converted))
+
+    def test_16uc1_converts_every_value_from_millimeters(self):
+        source = np.array([[0, 50, 100, 101, 1000]], dtype=np.uint16)
+
+        converted = depth_image_to_meters(source, "16UC1")
+
+        np.testing.assert_allclose(
+            np.array([[0.0, 0.05, 0.1, 0.101, 1.0]], dtype=np.float32),
+            converted,
+        )
+
+    def test_unsupported_encoding_and_non_2d_images_are_rejected(self):
+        with self.assertRaises(ValueError):
+            depth_image_to_meters(np.ones((2, 2), dtype=np.uint16), "mono16")
+        with self.assertRaises(ValueError):
+            depth_image_to_meters(np.ones((2, 2, 1), dtype=np.float32), "32FC1")
+        with self.assertRaises(ValueError):
+            depth_image_to_meters(np.array([["bad"]]), "32FC1")
+
+
+class RoiMeanDepthTest(unittest.TestCase):
+    def test_roi_clamps_at_edges_and_filters_nonpositive_nonfinite_depth(self):
+        depth = np.array(
+            [
+                [0.05, 0.1, math.nan],
+                [0.0, -1.0, math.inf],
+                [2.0, 4.0, 6.0],
+            ],
+            dtype=np.float32,
+        )
+
+        self.assertAlmostEqual(0.075, roi_mean_depth(depth, 0, 0, 1))
+        self.assertAlmostEqual(5.0, roi_mean_depth(depth, 2, 2, 1))
+        self.assertIsNone(roi_mean_depth(np.zeros((2, 2)), 0, 0, 1))
+
+    def test_roi_rejects_out_of_range_or_malformed_inputs(self):
+        depth = np.ones((2, 3), dtype=np.float32)
+        for u, v, half_size in (
+            (-1, 0, 1),
+            (3, 0, 1),
+            (0, -1, 1),
+            (0, 2, 1),
+            (0.5, 0, 1),
+            (0, 0, -1),
+        ):
+            with self.subTest(u=u, v=v, half_size=half_size):
+                with self.assertRaises(ValueError):
+                    roi_mean_depth(depth, u, v, half_size)
+        with self.assertRaises(ValueError):
+            roi_mean_depth(np.ones((2, 2, 1)), 0, 0, 1)
+
+
+class DepthSampleSelectionTest(unittest.TestCase):
+    @staticmethod
+    def sample(stamp_seconds):
+        return DepthSample(
+            depth_meters=np.array([[stamp_seconds]], dtype=np.float32),
+            stamp=object(),
+            stamp_seconds=stamp_seconds,
+            frame_id="camera_color_optical_frame",
+            encoding="32FC1",
+        )
+
+    def test_older_matching_sample_remains_selectable_after_newer_samples(self):
+        older = self.sample(10.0)
+        samples = (older, self.sample(10.3), self.sample(10.4))
+
+        selected = select_closest_depth_sample(samples, 10.04, 0.1)
+
+        self.assertIs(older, selected)
+
+    def test_no_sample_within_delta_returns_none(self):
+        samples = (self.sample(10.0), self.sample(10.3))
+
+        self.assertIsNone(select_closest_depth_sample(samples, 10.15, 0.1))
+
+    def test_equal_delta_tie_selects_earlier_timestamp(self):
+        earlier = self.sample(9.9)
+        later = self.sample(10.1)
+
+        self.assertIs(
+            earlier,
+            select_closest_depth_sample((later, earlier), 10.0, 0.11),
+        )
+
+    def test_zero_nonfinite_and_malformed_sample_timestamps_are_rejected(self):
+        for target in (0.0, math.nan, math.inf):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError):
+                    select_closest_depth_sample((self.sample(1.0),), target, 0.1)
+        for sample_stamp in (0.0, math.nan, math.inf):
+            with self.subTest(sample_stamp=sample_stamp):
+                with self.assertRaises(ValueError):
+                    select_closest_depth_sample((self.sample(sample_stamp),), 1.0, 0.1)
 
 
 class CameraInfoNodeSourceContractTest(unittest.TestCase):
@@ -126,23 +245,35 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
                 geometry_imports.update(alias.name for alias in node.names)
 
         self.assertTrue({"CameraInfo", "Image"}.issubset(sensor_imports))
-        self.assertEqual({"deproject_pixel", "timestamps_within"}, geometry_imports)
+        self.assertEqual(
+            {
+                "DepthSample",
+                "deproject_pixel",
+                "depth_image_to_meters",
+                "roi_mean_depth",
+                "select_closest_depth_sample",
+            },
+            geometry_imports,
+        )
 
-    def test_node_initializes_camera_state_and_validates_sensor_delta(self):
+    def test_node_initializes_locked_bounded_queue_and_validates_parameters(self):
         initializer = self.function_source("__init__")
         loader = self.function_source("_load_ros_params")
 
         self.assertIn("self.latest_camera_info = None", initializer)
-        self.assertIn("self.latest_depth_sample = None", initializer)
-        self.assertNotIn("self.latest_depth_frame", self.source)
-        self.assertNotIn("self.latest_depth_stamp", self.source)
-        self.assertIn('rospy.get_param("~camera_frame", "")', loader)
+        self.assertIn("self.sensor_lock = threading.Lock()", initializer)
+        self.assertIn("self.depth_samples = deque(maxlen=self.depth_queue_size)", initializer)
         self.assertIn('rospy.get_param("~maximum_sensor_delta", 0.15)', loader)
+        self.assertIn('rospy.get_param("~depth_queue_size", 60)', loader)
+        self.assertIn("isinstance(configured_queue_size, bool)", loader)
+        self.assertIn("isinstance(configured_queue_size, int)", loader)
+        self.assertIn("configured_queue_size <= 0", loader)
         self.assertIn("math.isfinite", loader)
         self.assertIn("< 0", loader)
         self.assertIn("rospy.logfatal", loader)
+        self.assertNotIn("~camera_frame", self.source)
 
-    def test_node_subscribes_to_and_rejects_malformed_camera_info(self):
+    def test_node_keeps_latest_valid_camera_info_when_invalid_message_arrives(self):
         setup = self.function_source("_setup_subscriptions")
         callback = self.function_source("_camera_info_callback")
 
@@ -154,19 +285,27 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         self.assertIn("message.width", callback)
         self.assertIn("message.height", callback)
         self.assertIn("math.isfinite", callback)
+        self.assertIn("with self.sensor_lock:", callback)
         self.assertIn("self.latest_camera_info = message", callback)
+        self.assertNotIn("self.latest_camera_info = None", callback)
+        self.assertIn("CameraInfo 無效", callback)
 
-    def test_depth_callback_publishes_frame_and_stamp_as_one_sample(self):
+    def test_depth_callback_validates_and_appends_complete_sample_under_lock(self):
         depth_callback = self.function_source("_depth_image_callback")
 
         self.assertIn("converted_frame = self.cv_bridge.imgmsg_to_cv2", depth_callback)
-        self.assertIn(
-            "self.latest_depth_sample = (converted_frame, image_msg.header.stamp)",
-            depth_callback,
-        )
-        self.assertIn("self.latest_depth_sample = None", depth_callback)
+        self.assertIn("depth_image_to_meters(converted_frame, encoding)", depth_callback)
+        self.assertIn("stamp.is_zero()", depth_callback)
+        self.assertIn("math.isfinite(stamp_seconds)", depth_callback)
+        self.assertIn("image_msg.header.frame_id", depth_callback)
+        self.assertIn("DepthSample(", depth_callback)
+        for field in ("depth_meters", "stamp", "stamp_seconds", "frame_id", "encoding"):
+            self.assertIn(f"{field}=", depth_callback)
+        self.assertIn("with self.sensor_lock:", depth_callback)
+        self.assertIn("self.depth_samples.append(sample)", depth_callback)
+        self.assertNotIn(".clear(", depth_callback)
 
-    def test_detection_callback_snapshots_each_sensor_input_once_at_entry(self):
+    def test_detection_callback_snapshots_queue_and_camera_once_under_lock(self):
         callback_node = self.function_node("bounding_box_callback")
         detection_callback = self.function_source("bounding_box_callback")
         executable_body = callback_node.body
@@ -177,51 +316,35 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         ):
             executable_body = executable_body[1:]
 
-        first_assignment, second_assignment = executable_body[:2]
-        self.assertIsInstance(first_assignment, ast.Assign)
-        self.assertIsInstance(second_assignment, ast.Assign)
-        self.assertEqual("depth_sample", first_assignment.targets[0].id)
-        self.assertEqual("latest_depth_sample", first_assignment.value.attr)
-        self.assertEqual("camera_info", second_assignment.targets[0].id)
-        self.assertEqual("latest_camera_info", second_assignment.value.attr)
-        self.assertEqual(1, detection_callback.count("self.latest_depth_sample"))
+        snapshot_block = executable_body[0]
+        self.assertIsInstance(snapshot_block, ast.With)
+        snapshot_source = ast.get_source_segment(self.source, snapshot_block)
+        self.assertIn("with self.sensor_lock:", snapshot_source)
+        self.assertIn("depth_samples = tuple(self.depth_samples)", snapshot_source)
+        self.assertIn("camera_info = self.latest_camera_info", snapshot_source)
+        self.assertEqual(1, detection_callback.count("self.depth_samples"))
         self.assertEqual(1, detection_callback.count("self.latest_camera_info"))
-        self.assertIn("depth_frame, depth_stamp = depth_sample", detection_callback)
         self.assertIn("camera_info.width", detection_callback)
         self.assertIn("camera_info.height", detection_callback)
         self.assertIn("detections_msg.header.stamp", detection_callback)
-        self.assertIn("timestamps_within", detection_callback)
+        self.assertIn("select_closest_depth_sample", detection_callback)
         self.assertIn("self.maximum_sensor_delta", detection_callback)
         self.assertIn("rospy.logwarn_throttle", detection_callback)
 
-    def test_zero_stamps_are_rejected_before_timestamp_matching(self):
-        callback_node = self.function_node("bounding_box_callback")
+    def test_detection_requires_matching_official_frames_and_selected_dimensions(self):
         detection_callback = self.function_source("bounding_box_callback")
-        zero_stamp_if = next(
-            node
-            for node in ast.walk(callback_node)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.BoolOp)
-            and isinstance(node.test.op, ast.Or)
-            and "depth_stamp.is_zero()" in ast.get_source_segment(self.source, node.test)
-            and "detections_msg.header.stamp.is_zero()"
-            in ast.get_source_segment(self.source, node.test)
-        )
 
-        zero_stamp_source = ast.get_source_segment(self.source, zero_stamp_if)
-        timestamp_call_position = detection_callback.index("timestamps_within")
-        zero_check_position = detection_callback.index("depth_stamp.is_zero()")
-        self.assertIn("rospy.logwarn_throttle", zero_stamp_source)
-        self.assertTrue(any(isinstance(node, ast.Return) for node in zero_stamp_if.body))
-        self.assertLess(zero_check_position, timestamp_call_position)
+        self.assertIn("selected_sample.frame_id", detection_callback)
+        self.assertIn("camera_info.header.frame_id", detection_callback)
+        self.assertIn("detections_msg.header.frame_id", detection_callback)
+        self.assertIn("selected_sample.depth_meters.shape", detection_callback)
+        self.assertIn("camera_info.width", detection_callback)
+        self.assertIn("camera_info.height", detection_callback)
 
-    def test_roi_and_point_helpers_only_use_snapshotted_sensor_inputs(self):
-        roi_source = self.function_source("_get_roi_mean_depth")
+    def test_roi_and_point_use_only_selected_sample_and_camera_snapshot(self):
         calculation = self.function_source("_calculate_3d_point")
 
-        self.assertIn("def _get_roi_mean_depth(self, depth_frame, u, v)", roi_source)
-        self.assertIn("depth_frame.shape", roi_source)
-        self.assertNotIn("self.latest_", roi_source)
+        self.assertNotIn("def _get_roi_mean_depth", self.source)
         self.assertIn(
             "def _calculate_3d_point(self, u, v, depth_in_meters, camera_info, depth_stamp)",
             calculation,
@@ -229,21 +352,42 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
         self.assertIn("deproject_pixel", calculation)
         self.assertIn("camera_info.K", calculation)
         self.assertIn("camera_info.header.frame_id", calculation)
-        self.assertIn("self.camera_frame_override", calculation)
         self.assertIn("point.header.stamp = depth_stamp", calculation)
         self.assertNotIn("self.latest_", calculation)
+        self.assertNotIn("camera_frame_override", self.source)
 
         detection_callback = self.function_source("bounding_box_callback")
-        self.assertIn(
-            "self._get_roi_mean_depth(depth_frame, center_u, center_v)",
-            detection_callback,
-        )
+        self.assertIn("roi_mean_depth(", detection_callback)
+        self.assertIn("selected_sample.depth_meters", detection_callback)
         self.assertIn(
             "self._calculate_3d_point(\n"
-            "                        center_u, center_v, mean_depth, camera_info, depth_stamp\n"
+            "                        center_u, center_v, mean_depth, camera_info, selected_sample.stamp\n"
             "                    )",
             detection_callback,
         )
+
+    def test_obsolete_heuristic_and_unused_ros_imports_are_absent(self):
+        self.assertNotIn("mean_depth_mm", self.source)
+        self.assertNotIn("> 100", self.source)
+        imported_names = set()
+        imported_modules = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported_names.update(alias.name for alias in node.names)
+                imported_modules.add(node.module)
+        for forbidden_import in (
+            "TransformStamped",
+            "Odometry",
+            "BoundingBox",
+        ):
+            with self.subTest(forbidden_import=forbidden_import):
+                self.assertNotIn(forbidden_import, imported_names)
+        for forbidden_module in ("tf.transformations",):
+            with self.subTest(forbidden_module=forbidden_module):
+                self.assertNotIn(forbidden_module, imported_modules)
+        self.assertIn("tf2_geometry_msgs", imported_modules)
 
     def test_old_intrinsics_and_default_frame_are_absent(self):
         for forbidden in (

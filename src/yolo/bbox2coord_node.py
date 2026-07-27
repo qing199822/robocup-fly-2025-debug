@@ -1,26 +1,32 @@
 #!/usr/bin/env python
 # coding: utf-8
-import rospy
-import tf2_ros
-import tf.transformations as tft
-import tf2_geometry_msgs
-import numpy as np
+from collections import deque
 import math
 import re
 import sys
+import threading
+
+import rospy
+import tf2_ros
+import tf2_geometry_msgs  # Registers PointStamped transforms with tf2_ros.
 
 # 訊息類型
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
-from geometry_msgs.msg import PointStamped, TransformStamped
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PointStamped
 from tf2_msgs.msg import TFMessage
-from darknet_ros_msgs.msg import BoundingBoxes, BoundingBox
+from darknet_ros_msgs.msg import BoundingBoxes
 from actor_msgs.msg import ActorInfo
 
 # 工具
 from cv_bridge import CvBridge
-from camera_geometry import deproject_pixel, timestamps_within
+from camera_geometry import (
+    DepthSample,
+    deproject_pixel,
+    depth_image_to_meters,
+    roi_mean_depth,
+    select_closest_depth_sample,
+)
 
 class CoordinateEstimator:
     """
@@ -39,13 +45,14 @@ class CoordinateEstimator:
 
         # 2. 工具和狀態變數
         self.cv_bridge = CvBridge()
-        self.latest_depth_sample = None
+        self.sensor_lock = threading.Lock()
         self.latest_camera_info = None
         self.active_tracking_id = None
         self.last_tracking_update_time = rospy.Time(0)
         
         # 3. 讀取ROS參數
         self._load_ros_params()
+        self.depth_samples = deque(maxlen=self.depth_queue_size)
 
         # 4. TF2 設置
         self.transform_buffer = tf2_ros.Buffer()
@@ -71,7 +78,6 @@ class CoordinateEstimator:
 
     def _load_ros_params(self):
         """從參數伺服器載入時間限制和座標系名稱。"""
-        self.camera_frame_override = rospy.get_param("~camera_frame", "")
         self.target_frame_id = rospy.get_param("~target_frame", "ground_plane")
         configured_sensor_delta = rospy.get_param("~maximum_sensor_delta", 0.15)
         try:
@@ -84,6 +90,17 @@ class CoordinateEstimator:
             message = "~maximum_sensor_delta 必須是有限的非負數。"
             rospy.logfatal(message)
             raise ValueError(message)
+
+        configured_queue_size = rospy.get_param("~depth_queue_size", 60)
+        if (
+            isinstance(configured_queue_size, bool)
+            or not isinstance(configured_queue_size, int)
+            or configured_queue_size <= 0
+        ):
+            message = "~depth_queue_size 必須是正整數。"
+            rospy.logfatal(message)
+            raise ValueError(message)
+        self.depth_queue_size = configured_queue_size
         self.tracking_timeout_duration = rospy.Duration(rospy.get_param("~tracking_timeout", 1.0))
 
     def _create_actor_publishers(self):
@@ -129,7 +146,6 @@ class CoordinateEstimator:
 
     def _camera_info_callback(self, message):
         """只保留完整且可用的官方相機標定。"""
-        self.latest_camera_info = None
         try:
             matrix_is_valid = (
                 len(message.K) == 9
@@ -145,18 +161,38 @@ class CoordinateEstimator:
             frame_is_valid = False
 
         if not (matrix_is_valid and dimensions_are_valid and frame_is_valid):
-            rospy.logwarn_throttle(2, "CameraInfo 無效，清除舊標定並跳過處理。")
+            rospy.logwarn_throttle(2, "CameraInfo 無效，忽略本次標定訊息。")
             return
-        self.latest_camera_info = message
+        with self.sensor_lock:
+            self.latest_camera_info = message
 
     def _depth_image_callback(self, image_msg):
-        """將ROS Image訊息轉換為OpenCV格式並儲存。"""
+        """驗證深度訊息並把完整樣本加入有界佇列。"""
         try:
+            encoding = image_msg.encoding
+            frame_id = image_msg.header.frame_id
+            stamp = image_msg.header.stamp
+            if not frame_id:
+                raise ValueError("深度圖 frame_id 為空")
+            if stamp.is_zero():
+                raise ValueError("深度圖時間戳為零")
+            stamp_seconds = float(stamp.to_sec())
+            if not math.isfinite(stamp_seconds) or stamp_seconds <= 0.0:
+                raise ValueError("深度圖時間戳必須是有限正數")
             converted_frame = self.cv_bridge.imgmsg_to_cv2(image_msg, desired_encoding="passthrough")
-            self.latest_depth_sample = (converted_frame, image_msg.header.stamp)
+            depth_meters = depth_image_to_meters(converted_frame, encoding)
+            sample = DepthSample(
+                depth_meters=depth_meters,
+                stamp=stamp,
+                stamp_seconds=stamp_seconds,
+                frame_id=frame_id,
+                encoding=encoding,
+            )
         except Exception as e:
-            rospy.logwarn(f"深度圖像轉換失敗: {e}")
-            self.latest_depth_sample = None
+            rospy.logwarn_throttle(2, f"深度圖樣本無效，忽略本次訊息: {e}")
+            return
+        with self.sensor_lock:
+            self.depth_samples.append(sample)
 
     def _tracking_status_callback(self, status_msg):
         """解析並更新當前追踪的目標ID。"""
@@ -174,36 +210,43 @@ class CoordinateEstimator:
         """
         處理檢測到的邊界框的主回呼函數。
         """
-        depth_sample = self.latest_depth_sample
-        camera_info = self.latest_camera_info
-        if depth_sample is None or camera_info is None:
-            rospy.logwarn_throttle(2, "深度樣本或 CameraInfo 尚未接收，跳過處理。")
+        with self.sensor_lock:
+            depth_samples = tuple(self.depth_samples)
+            camera_info = self.latest_camera_info
+        if not depth_samples or camera_info is None:
+            rospy.logwarn_throttle(2, "深度樣本佇列或 CameraInfo 尚未接收，跳過處理。")
             return
 
-        depth_frame, depth_stamp = depth_sample
-        depth_height, depth_width = depth_frame.shape[:2]
-        if (
-            camera_info.width != depth_width
-            or camera_info.height != depth_height
-        ):
-            rospy.logwarn_throttle(2, "CameraInfo 尺寸與深度圖不一致，跳過處理。")
+        detection_frame = detections_msg.header.frame_id
+        camera_frame = camera_info.header.frame_id
+        if not detection_frame or detection_frame != camera_frame:
+            rospy.logwarn_throttle(2, "彩色檢測結果與 CameraInfo 座標系不一致，跳過處理。")
             return
 
-        if depth_stamp.is_zero() or detections_msg.header.stamp.is_zero():
-            rospy.logwarn_throttle(2, "深度圖或彩色檢測結果時間戳為零，跳過處理。")
+        if detections_msg.header.stamp.is_zero():
+            rospy.logwarn_throttle(2, "彩色檢測結果時間戳為零，跳過處理。")
             return
 
         try:
-            sensor_timestamps_match = timestamps_within(
-                depth_stamp.to_sec(),
+            selected_sample = select_closest_depth_sample(
+                depth_samples,
                 detections_msg.header.stamp.to_sec(),
                 self.maximum_sensor_delta,
             )
         except ValueError as error:
             rospy.logwarn_throttle(2, f"感測器時間戳無效，跳過處理: {error}")
             return
-        if not sensor_timestamps_match:
-            rospy.logwarn_throttle(2, "彩色檢測結果與深度圖時間差過大，跳過處理。")
+        if selected_sample is None:
+            rospy.logwarn_throttle(2, "沒有時間匹配的深度圖樣本，跳過處理。")
+            return
+
+        if selected_sample.frame_id != camera_frame:
+            rospy.logwarn_throttle(2, "深度圖與 CameraInfo 座標系不一致，跳過處理。")
+            return
+
+        depth_height, depth_width = selected_sample.depth_meters.shape
+        if camera_info.width != depth_width or camera_info.height != depth_height:
+            rospy.logwarn_throttle(2, "CameraInfo 尺寸與深度圖不一致，跳過處理。")
             return
 
         if not self._is_tracking_active():
@@ -220,7 +263,16 @@ class CoordinateEstimator:
                 center_u = int((detection.xmin + detection.xmax) / 2)
                 center_v = int((detection.ymin + detection.ymax) / 2)
                 
-                mean_depth = self._get_roi_mean_depth(depth_frame, center_u, center_v)
+                try:
+                    mean_depth = roi_mean_depth(
+                        selected_sample.depth_meters,
+                        center_u,
+                        center_v,
+                        self.ROI_HALF_SIZE,
+                    )
+                except ValueError as error:
+                    rospy.logwarn(f"'{detection.Class}' 的深度 ROI 無效，跳過處理: {error}")
+                    continue
                 if mean_depth is None:
                     rospy.logwarn(f"無法獲取 '{detection.Class}' 在 ({center_u}, {center_v}) 的有效深度。")
                     continue
@@ -228,7 +280,7 @@ class CoordinateEstimator:
                 # 2. 計算在相機座標系下的3D點
                 try:
                     point_in_camera = self._calculate_3d_point(
-                        center_u, center_v, mean_depth, camera_info, depth_stamp
+                        center_u, center_v, mean_depth, camera_info, selected_sample.stamp
                     )
                 except ValueError as error:
                     rospy.logwarn(f"'{detection.Class}' 的相機反投影失敗，跳過處理: {error}")
@@ -253,33 +305,12 @@ class CoordinateEstimator:
                      (rospy.Time.now() - self.last_tracking_update_time) < self.tracking_timeout_duration)
         return is_active
 
-    def _get_roi_mean_depth(self, depth_frame, u, v):
-        """從深度圖像的一個小區域（ROI）中計算有效的平均深度值。"""
-        h, w = depth_frame.shape
-        
-        # 定義ROI邊界
-        u_min = max(0, u - self.ROI_HALF_SIZE)
-        u_max = min(w - 1, u + self.ROI_HALF_SIZE)
-        v_min = max(0, v - self.ROI_HALF_SIZE)
-        v_max = min(h - 1, v + self.ROI_HALF_SIZE)
-
-        # 提取ROI並過濾無效值
-        roi = depth_frame[v_min:v_max+1, u_min:u_max+1]
-        valid_depths = roi[(roi > 0) & np.isfinite(roi)]
-
-        if valid_depths.size == 0:
-            return None
-
-        # 計算平均深度並處理單位（假設原始單位為毫米）
-        mean_depth_mm = np.mean(valid_depths)
-        return mean_depth_mm / 1000.0 if mean_depth_mm > 100 else mean_depth_mm
-
     def _calculate_3d_point(self, u, v, depth_in_meters, camera_info, depth_stamp):
         """根據像素座標和深度，計算在相機座標系中的3D點。"""
         x, y, z = deproject_pixel(u, v, depth_in_meters, camera_info.K)
         
         point = PointStamped()
-        point.header.frame_id = self.camera_frame_override or camera_info.header.frame_id
+        point.header.frame_id = camera_info.header.frame_id
         point.header.stamp = depth_stamp
         point.point.x = x
         point.point.y = y
