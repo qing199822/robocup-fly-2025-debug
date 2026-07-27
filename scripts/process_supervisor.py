@@ -20,6 +20,7 @@ import time
 PR_SET_CHILD_SUBREAPER = 36
 POLL_SECONDS = 0.02
 KILL_WAIT_SECONDS = 0.2
+CLEANUP_FAILURE_STATUS = 125
 
 
 def process_record(pid):
@@ -66,9 +67,7 @@ class ProcessSupervisor:
         self.tracked[child.pid] = record[1]
 
         while self.main_status is None and self.requested_signal is None:
-            scan_deadline = time.monotonic() + POLL_SECONDS
-            self.discover(scan_deadline)
-            self.reap(scan_deadline)
+            self.reap(time.monotonic() + POLL_SECONDS)
             if self.main_status is None and self.requested_signal is None:
                 time.sleep(POLL_SECONDS)
 
@@ -76,8 +75,16 @@ class ProcessSupervisor:
         final_deadline = cleanup_started + self.grace_seconds
         term_deadline = max(cleanup_started, final_deadline - KILL_WAIT_SECONDS)
         self.wait_until_empty(term_deadline, signal.SIGTERM)
-        self.wait_until_empty(final_deadline, signal.SIGKILL)
+        cleanup_complete = self.wait_until_empty(final_deadline, signal.SIGKILL)
 
+        if not cleanup_complete:
+            if self.requested_signal is None and self.main_status not in (None, 0):
+                return self.main_status
+            print(
+                "process supervisor cleanup did not complete before deadline",
+                file=sys.stderr,
+            )
+            return CLEANUP_FAILURE_STATUS
         if self.main_status is not None:
             return self.main_status
         return 128 + (self.requested_signal or signal.SIGTERM)

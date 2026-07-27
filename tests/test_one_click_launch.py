@@ -383,6 +383,30 @@ class LauncherHarness:
             True,
         )
         self._write(
+            "bin/supervisor-python",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                if [ "$SUPERVISOR_MODE" != simulation_cleanup_fail ]; then
+                    exec /usr/bin/python3 "$@"
+                fi
+                is_simulation=false
+                for argument in "$@"; do
+                    case "$argument" in
+                        */robocup_zzufly.launch) is_simulation=true ;;
+                    esac
+                done
+                if ! "$is_simulation"; then
+                    exec /usr/bin/python3 "$@"
+                fi
+                trap '' TERM
+                /usr/bin/python3 "$@"
+                exit 125
+                """
+            ),
+            True,
+        )
+        self._write(
             "bin/tee",
             textwrap.dedent(
                 """\
@@ -1299,6 +1323,121 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
             supervisor.stop_descendants(signal.SIGTERM, time.monotonic() - 1)
 
         self.assertEqual(0, signal_process.call_count)
+
+    def test_supervisor_reports_incomplete_cleanup_after_deadline(self):
+        supervisor_path = self.harness.workspace / "scripts/process_supervisor.py"
+        command = textwrap.dedent(
+            """\
+            /usr/bin/setsid fork-storm-leaf &
+            deadline=$((SECONDS + 2))
+            while [ ! -s "$STATE_DIR/fork_storm_child_pids" ] \
+                && [ "$SECONDS" -lt "$deadline" ]; do
+                sleep 0.01
+            done
+            [ -s "$STATE_DIR/fork_storm_child_pids" ]
+            """
+        )
+        result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                str(supervisor_path),
+                "--grace-seconds",
+                "0.000001",
+                "--",
+                "bash",
+                "-c",
+                command,
+            ],
+            cwd=self.harness.workspace,
+            env=self.harness.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        child_pids = [
+            int(value)
+            for value in (
+                self.harness.state / "fork_storm_child_pids"
+            ).read_text(encoding="ascii").splitlines()
+        ]
+
+        def process_exists(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        try:
+            self.assertTrue(any(process_exists(pid) for pid in child_pids))
+            self.assertEqual(125, result.returncode)
+        finally:
+            for pid in child_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_launcher_propagates_supervisor_cleanup_failure(self):
+        result, elapsed = self.harness.run(
+            SUPERVISOR_MODE="simulation_cleanup_fail",
+            SUPERVISOR_PYTHON=str(self.harness.bin / "supervisor-python"),
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        self.assertIn("进程监督器清理失败", result.stdout)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_supervisor_does_not_scan_proc_while_main_is_running(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        child = mock.Mock(pid=123456, returncode=0)
+
+        def finish_main(_deadline):
+            supervisor.main_status = 0
+
+        with mock.patch.object(supervisor_module, "enable_subreaper"), mock.patch.object(
+            supervisor_module.signal, "signal"
+        ), mock.patch.object(
+            supervisor_module.subprocess, "Popen", return_value=child
+        ), mock.patch.object(
+            supervisor_module, "process_record", return_value=(supervisor.supervisor_pid, 1)
+        ), mock.patch.object(
+            supervisor, "discover"
+        ) as discover, mock.patch.object(
+            supervisor, "reap", side_effect=finish_main
+        ), mock.patch.object(
+            supervisor, "wait_until_empty", return_value=True
+        ):
+            status = supervisor.start()
+
+        self.assertEqual(0, status)
+        self.assertEqual(0, discover.call_count)
+
+    def test_supervisor_preserves_natural_main_failure_during_cleanup_failure(self):
+        supervisor_module = load_process_supervisor_module()
+        supervisor = supervisor_module.ProcessSupervisor(["unused"], 1)
+        child = mock.Mock(pid=123456, returncode=42)
+
+        def fail_main(_deadline):
+            supervisor.main_status = 42
+
+        with mock.patch.object(supervisor_module, "enable_subreaper"), mock.patch.object(
+            supervisor_module.signal, "signal"
+        ), mock.patch.object(
+            supervisor_module.subprocess, "Popen", return_value=child
+        ), mock.patch.object(
+            supervisor_module, "process_record", return_value=(supervisor.supervisor_pid, 1)
+        ), mock.patch.object(
+            supervisor, "reap", side_effect=fail_main
+        ), mock.patch.object(
+            supervisor, "wait_until_empty", return_value=False
+        ):
+            status = supervisor.start()
+
+        self.assertEqual(42, status)
 
     def test_cleanup_bounds_continuing_detached_fork_storm(self):
         unrelated = subprocess.Popen(

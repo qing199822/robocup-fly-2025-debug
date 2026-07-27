@@ -25,6 +25,7 @@ PREPARE_MODEL="$COMPLIANCE_PACKAGE_DIR/scripts/prepare_model.py"
 OFFICIAL_MANIFEST="$COMPLIANCE_PACKAGE_DIR/config/official_manifest.json"
 SENSOR_MOUNT_CONFIG="$COMPLIANCE_PACKAGE_DIR/config/sensor_mount.yaml"
 PROCESS_SUPERVISOR="$WORKSPACE_DIR/scripts/process_supervisor.py"
+PROCESS_SUPERVISOR_CLEANUP_FAILURE_STATUS=125
 SUPERVISOR_PYTHON="${SUPERVISOR_PYTHON:-/usr/bin/python3}"
 RUN_TMP_DIR=""
 GENERATED_MODEL=""
@@ -1080,6 +1081,9 @@ cleanup() {
         fi
         if ! reap_if_exited "$pid"; then
             echo "错误：无法在清理期限内回收 ${OWNED_NAMES[$pid]}（PID $pid）。" >&2
+            CLEANUP_STATUS=1
+        elif [ "$LAST_PROCESS_STATUS" -eq "$PROCESS_SUPERVISOR_CLEANUP_FAILURE_STATUS" ]; then
+            echo "错误：${OWNED_NAMES[$pid]}进程监督器清理失败。" >&2
             CLEANUP_STATUS=1
         fi
     done
