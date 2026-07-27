@@ -15,6 +15,12 @@ SINGLE_LAUNCH = (
     / "src/competition_compliance/launch/single_vehicle_spawn_clean.launch"
 )
 PACKAGE_XML = WORKSPACE / "src/competition_compliance/package.xml"
+STATIC_TF_LAUNCH = WORKSPACE / "src/mix_nav/simple_navigator/launch/static_tf.launch"
+DOWN_RESUME_LAUNCH = WORKSPACE / "src/look_up/launch/down_resume.launch"
+SENSOR_TF_LAUNCH = WORKSPACE / "src/competition_compliance/launch/sensor_tf.launch"
+SENSOR_TF_PUBLISHER = (
+    WORKSPACE / "src/competition_compliance/scripts/sensor_tf_publisher.py"
+)
 CLEAN_INCLUDE = (
     "$(find competition_compliance)/launch/"
     "single_vehicle_spawn_clean.launch"
@@ -297,6 +303,74 @@ class PackageMetadataContractTest(unittest.TestCase):
         }
         self.assertTrue({"roslaunch", "gazebo_ros", "px4"}.issubset(dependencies))
         self.assertNotIn("xmlstarlet", dependencies)
+
+
+class SensorTransformLaunchContractTest(unittest.TestCase):
+    def test_legacy_static_tf_keeps_only_world_frame_transforms(self):
+        text = STATIC_TF_LAUNCH.read_text(encoding="utf-8")
+        root = ET.fromstring(text)
+
+        nodes = root.findall("./node")
+        self.assertEqual(2, len(nodes))
+        self.assertEqual(
+            {
+                "typhoon_h480_0_map_to_world",
+                "typhoon_h480_0_world_to_ground_plane",
+            },
+            {node.attrib.get("name") for node in nodes},
+        )
+        for forbidden in (
+            "-0.106 0.03 -0.586",
+            "camera_link",
+            "camera_optical_link",
+            "base_to_camera_broadcaster",
+            "base_to_camera",
+        ):
+            self.assertNotIn(forbidden, text)
+
+    def test_main_launch_includes_audited_sensor_transform_once(self):
+        root = ET.parse(str(DOWN_RESUME_LAUNCH)).getroot()
+        includes = root.findall(
+            "./include[@file='$(find competition_compliance)/launch/sensor_tf.launch']"
+        )
+        self.assertEqual(1, len(includes))
+
+    def test_sensor_launch_exposes_only_the_audited_mount_source(self):
+        root = ET.parse(str(SENSOR_TF_LAUNCH)).getroot()
+        args = root.findall("./arg")
+        self.assertEqual(1, len(args))
+        self.assertEqual(
+            {
+                "name": "mount_config",
+                "default": "$(find competition_compliance)/config/sensor_mount.yaml",
+            },
+            args[0].attrib,
+        )
+
+        nodes = root.findall("./node")
+        self.assertEqual(1, len(nodes))
+        self.assertEqual(
+            {
+                "pkg": "competition_compliance",
+                "type": "sensor_tf_publisher.py",
+                "name": "competition_sensor_tf",
+                "output": "screen",
+            },
+            nodes[0].attrib,
+        )
+        params = nodes[0].findall("./param")
+        self.assertEqual(1, len(params))
+        self.assertEqual(
+            {"name": "mount_config", "value": "$(arg mount_config)"},
+            params[0].attrib,
+        )
+
+    def test_publisher_fixes_competition_frames_in_source(self):
+        source = SENSOR_TF_PUBLISHER.read_text(encoding="utf-8")
+        self.assertIn('PARENT_FRAME = "base_link"', source)
+        self.assertIn('CHILD_FRAME = "depth_camera_base"', source)
+        self.assertNotIn('get_param("~parent_frame"', source)
+        self.assertNotIn('get_param("~child_frame"', source)
 
 
 if __name__ == "__main__":

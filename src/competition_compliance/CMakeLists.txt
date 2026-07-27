@@ -15,6 +15,7 @@ install(DIRECTORY launch
 
 catkin_install_python(PROGRAMS
   scripts/prepare_model.py
+  scripts/sensor_tf_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -22,4 +23,5 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_model.py)
   catkin_add_nosetests(test/test_manifest.py)
   catkin_add_nosetests(test/test_launch_contract.py)
+  catkin_add_nosetests(test/test_tf_math.py)
 endif()

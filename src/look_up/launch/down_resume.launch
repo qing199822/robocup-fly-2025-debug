@@ -21,6 +21,7 @@
 
     <!-- ========== 3. 静态变换 ========== -->
     <include file="$(find simple_navigator)/launch/static_tf.launch" />
+    <include file="$(find competition_compliance)/launch/sensor_tf.launch" />
 
     <!-- ========== 4. TF 变换树 ========== -->
     <include file="$(find transform_tree)/launch/tf.launch">
