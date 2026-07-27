@@ -195,7 +195,9 @@ class LauncherHarness:
             textwrap.dedent(
                 """\
                 #!/bin/bash
-                if [ "$SIMULATION_MODE" = success ] || [ "$SIMULATION_MODE" = delayed_fail ]; then
+                if [ "$SIMULATION_MODE" = success ] \
+                    || [ "$SIMULATION_MODE" = delayed_fail ] \
+                    || [ "$SIMULATION_MODE" = detached_child ]; then
                     echo /gazebo/get_world_properties
                     exit 0
                 fi
@@ -273,6 +275,19 @@ class LauncherHarness:
                     sleep "$SIMULATION_FAIL_DELAY"
                     exit 24
                 fi
+                if [ "$SIMULATION_MODE" = detached_child ]; then
+                    /usr/bin/setsid bash -c '
+                        trap "exit 0" TERM
+                        echo "$$" >> "$STATE_DIR/detached_child_pids"
+                        while :; do sleep 1; done
+                    ' &
+                    deadline=$((SECONDS + 2))
+                    while [ ! -s "$STATE_DIR/detached_child_pids" ] \
+                        && [ "$SECONDS" -lt "$deadline" ]; do
+                        sleep 0.01
+                    done
+                    [ -s "$STATE_DIR/detached_child_pids" ] || exit 25
+                fi
                 if [ "$IGNORE_TERM" = 1 ]; then
                     trap '' TERM
                 else
@@ -317,13 +332,15 @@ class LauncherHarness:
             textwrap.dedent(
                 """\
                 #!/bin/bash
-                touch "$STATE_DIR/setsid_called"
                 echo "$$" >> "$STATE_DIR/setsid_pids"
                 if [ "$SETSID_MODE" = delay ]; then
                     sleep 2 &
                     delay_pid=$!
                     echo "$delay_pid" >> "$STATE_DIR/setsid_descendant_pids"
+                    touch "$STATE_DIR/setsid_called"
                     wait "$delay_pid"
+                else
+                    touch "$STATE_DIR/setsid_called"
                 fi
                 exec /usr/bin/setsid "$@"
                 """
@@ -415,6 +432,7 @@ class LauncherHarness:
             "helper_pids",
             "setsid_pids",
             "setsid_descendant_pids",
+            "detached_child_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -434,6 +452,7 @@ class LauncherHarness:
             "helper_pids",
             "setsid_pids",
             "setsid_descendant_pids",
+            "detached_child_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -905,6 +924,19 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         deadline = time.monotonic() + 0.5
         while self.harness.recorded_processes_still_exist() and time.monotonic() < deadline:
             time.sleep(0.02)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_owned_child_in_independent_session_is_cleaned_up(self):
+        result, elapsed = self.harness.run(SIMULATION_MODE="detached_child")
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        detached_pid = int(
+            (self.harness.state / "detached_child_pids").read_text().strip()
+        )
+        with self.assertRaises(ProcessLookupError):
+            os.kill(detached_pid, 0)
         self.assertEqual([], self.harness.recorded_processes_still_exist())
         self.assertFalse(self.harness.run_tmp_exists())
 

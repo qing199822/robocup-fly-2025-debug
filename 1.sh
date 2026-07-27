@@ -863,6 +863,8 @@ signal_owned_target() {
     local pid="$2"
 
     if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
+        # ROS children can create new sessions, so retain their guarded PIDs before the root exits.
+        signal_direct_process_tree "$signal" "$pid"
         if group_is_running "$pid"; then
             if [ "$signal" = TERM ]; then
                 kill -TERM -- "-$pid" 2>/dev/null || true
