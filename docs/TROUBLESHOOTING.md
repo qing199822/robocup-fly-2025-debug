@@ -122,6 +122,55 @@ pgrep -af 'roslaunch|gzserver|gzclient|px4|mavros|yolo11n|tracking_node'
 
 `1.sh` 会保存任务、辅助节点和底层仿真的 PID，并用可终止后台 Bash 的信号清理。任务节点启动后的自动退出回归耗时约 16 秒。
 
+## competition-clean 完整验证与六机冒烟检查
+
+不打开 Gazebo 前，先在仓库根目录运行完整验证：
+
+```bash
+bash scripts/verify_competition_clean.sh
+```
+
+它会依次完成静态合规检查、仓库单元测试、Release 构建、官方 Actor collision 插件的工作区外置构建、Catkin 测试及构建后的第二次合规检查。重复运行是安全的；脚本只会更新自己生成的
+`competition-artifacts/static-compliance.json` 和
+`competition-artifacts/post-build-compliance.json`，不会删除该目录中的其他证据。
+
+需要检查真实六机运行状态时，打开两个终端，并确保两个终端都位于仓库根目录。
+
+终端 A：
+
+```bash
+bash 1.sh 6 mission_down.json
+```
+
+等待终端 A 显示六路相机就绪并开始任务后，在终端 B 运行：
+
+```bash
+bash scripts/smoke_competition_clean.sh
+```
+
+报告写入 `logs/competition-clean/smoke-日期-时间.随机字符.log`。只有六架飞机各自的 MAVROS 状态、位置、RGB、深度、彩色相机参数和精确通信节点都通过，并且全局固定 TF
+`base_link -> depth_camera_base` 可查询时，报告最后一行才会是：
+
+```text
+PASS competition-clean six-vehicle smoke
+```
+
+脚本遇到首个失败会立即返回非零，不会把后续车辆的结果伪装成成功：
+
+- `FAIL topic ...`：该编号飞机在 5 秒内没有收到对应消息；只有话题名存在还不够。
+- `FAIL node ..._communication`：缺少该编号的精确通信节点，不能由另一架飞机的节点代替。
+- `FAIL TF base_link -> depth_camera_base`：比赛启动流程发布的全局 Realsense 固定变换不可查询。
+
+检查完成后，在终端 A 按 `Ctrl-C`，等待启动脚本完成清理，再运行：
+
+```bash
+pgrep -af 'px4|gzserver|gzclient|multirotor_communication.py|yolo11n.py|bbox2coord_node.py'
+find /tmp -maxdepth 1 -type d -name 'robocup-fly-competition-clean.*' -print
+git -C "${XTDRONE_DIR:-../XTDrone}" status --short
+```
+
+预期三条命令都没有输出。若第一条列出进程，先依据终端 A 的本次运行日志核对 PID 和进程组；只停止这次 `1.sh` 启动的会话，不要使用宽泛的 `pkill`，以免停止其他 ROS 项目。若第二条列出临时目录或第三条显示 XTDrone 有变化，请保留终端 A 日志和 smoke 报告并按相应错误继续排查，不要手工修改官方目录来绕过检查。
+
 ## 测试说明
 
 项目自身的导航、任务、启动和图形环境测试应通过。`src/gazebo_ros_pkgs` 带有完整上游 Gazebo 测试套件；其中部分测试依赖额外权限、独占端口或专用场景，不适合作为本项目的单次验收标准。提交修改时至少运行 README 中列出的项目测试，并注明未运行的集成测试。
