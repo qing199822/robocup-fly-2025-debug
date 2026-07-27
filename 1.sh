@@ -103,6 +103,7 @@ official_root_is_readonly_mount() {
 
 ensure_official_readonly_sandbox() {
     local bwrap_path resolved_px4 resolved_xtdrone
+    local resolved_gazebo_models resolved_xtdrone_pythonpath
     local status_dir status_fifo status_fd status_line status_deadline
     local bwrap_pid sandbox_status
 
@@ -113,6 +114,14 @@ ensure_official_readonly_sandbox() {
         fi
         if ! official_root_is_readonly_mount "$XTDRONE_DIR"; then
             echo "错误：sandbox 标记无效，XTDRONE_DIR 并非独立只读挂载：$XTDRONE_DIR" >&2
+            return 1
+        fi
+        if ! official_root_is_readonly_mount "$GAZEBO_MODELS_DIR"; then
+            echo "错误：sandbox 标记无效，GAZEBO_MODELS_DIR 并非独立只读挂载：$GAZEBO_MODELS_DIR" >&2
+            return 1
+        fi
+        if ! official_root_is_readonly_mount "$XTDRONE_PYTHONPATH"; then
+            echo "错误：sandbox 标记无效，XTDRONE_PYTHONPATH 并非独立只读挂载：$XTDRONE_PYTHONPATH" >&2
             return 1
         fi
         return 0
@@ -134,6 +143,14 @@ ensure_official_readonly_sandbox() {
         echo "错误：XTDRONE_DIR 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_DIR" >&2
         return 1
     fi
+    if [ ! -d "$GAZEBO_MODELS_DIR" ] || [ -L "$GAZEBO_MODELS_DIR" ]; then
+        echo "错误：GAZEBO_MODELS_DIR 必须是存在的普通目录且最终组件不能是符号链接：$GAZEBO_MODELS_DIR" >&2
+        return 1
+    fi
+    if [ ! -d "$XTDRONE_PYTHONPATH" ] || [ -L "$XTDRONE_PYTHONPATH" ]; then
+        echo "错误：XTDRONE_PYTHONPATH 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_PYTHONPATH" >&2
+        return 1
+    fi
     if ! resolved_px4="$(cd "$PX4_DIR" && pwd -P)"; then
         echo "错误：无法解析 PX4_DIR：$PX4_DIR" >&2
         return 1
@@ -142,10 +159,20 @@ ensure_official_readonly_sandbox() {
         echo "错误：无法解析 XTDRONE_DIR：$XTDRONE_DIR" >&2
         return 1
     fi
+    if ! resolved_gazebo_models="$(cd "$GAZEBO_MODELS_DIR" && pwd -P)"; then
+        echo "错误：无法解析 GAZEBO_MODELS_DIR：$GAZEBO_MODELS_DIR" >&2
+        return 1
+    fi
+    if ! resolved_xtdrone_pythonpath="$(cd "$XTDRONE_PYTHONPATH" && pwd -P)"; then
+        echo "错误：无法解析 XTDRONE_PYTHONPATH：$XTDRONE_PYTHONPATH" >&2
+        return 1
+    fi
     PX4_DIR="$resolved_px4"
     XTDRONE_DIR="$resolved_xtdrone"
+    GAZEBO_MODELS_DIR="$resolved_gazebo_models"
+    XTDRONE_PYTHONPATH="$resolved_xtdrone_pythonpath"
     PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
-    export PX4_DIR XTDRONE_DIR PX4_BUILD_DIR
+    export PX4_DIR XTDRONE_DIR GAZEBO_MODELS_DIR XTDRONE_PYTHONPATH PX4_BUILD_DIR
     export ROBOCUP_OFFICIAL_ROOTS_READONLY=1
 
     if ! status_dir="$(mktemp -d /tmp/robocup-fly-bwrap.XXXXXX)"; then
@@ -176,6 +203,8 @@ ensure_official_readonly_sandbox() {
         --dev-bind / / \
         --ro-bind "$PX4_DIR" "$PX4_DIR" \
         --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" \
+        --ro-bind "$GAZEBO_MODELS_DIR" "$GAZEBO_MODELS_DIR" \
+        --ro-bind "$XTDRONE_PYTHONPATH" "$XTDRONE_PYTHONPATH" \
         "$SCRIPT_DIR/1.sh" "$@" &
     bwrap_pid=$!
 

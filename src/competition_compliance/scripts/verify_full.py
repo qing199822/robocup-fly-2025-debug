@@ -42,12 +42,22 @@ _COMMENTED_IDENTITY = re.compile(
 )
 _ZERO_DESCRIPTION = re.compile(r"<description(?:\s[^>]*)?>\s*0\s*</description>")
 _PROTECTED_VARIABLE = re.compile(
-    r"\$(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?![A-Za-z0-9_])"
-    r"|\$\{(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?:[^}]*)\}"
+    r"\$(?:PX4_DIR|XTDRONE_DIR|GAZEBO_MODELS_DIR|XTDRONE_PYTHONPATH|PX4_BUILD_DIR)"
+    r"(?![A-Za-z0-9_])"
+    r"|\$\{(?:PX4_DIR|XTDRONE_DIR|GAZEBO_MODELS_DIR|XTDRONE_PYTHONPATH|PX4_BUILD_DIR)"
+    r"(?:[^}]*)\}"
 )
-_OFFICIAL_LITERAL_NAMES = {"PX4_Firmware", "XTDrone"}
+_OFFICIAL_LITERAL_NAMES = {
+    "PX4_Firmware",
+    "XTDrone",
+    "gazebo_models",
+    ".xtdrone-python",
+}
 _OFFICIAL_LITERAL_PATH = re.compile(
-    r"(?:\b(?:PX4_Firmware|XTDrone)/|/(?:PX4_Firmware|XTDrone)(?:/|[\"'}\s]|$))"
+    r"(?:\b(?:PX4_Firmware|XTDrone|gazebo_models)/"
+    r"|(?:^|/)\.xtdrone-python/"
+    r"|/(?:PX4_Firmware|XTDrone|gazebo_models|\.xtdrone-python)"
+    r"(?:/|[\"'}\s]|$))"
 )
 _DIRECT_WRITE_COMMANDS = {
     "chmod",
@@ -66,22 +76,36 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
     {
         'PX4_DIR="${PX4_DIR:-$PROJECT_ROOT/PX4_Firmware}"',
         'XTDRONE_DIR="${XTDRONE_DIR:-$PROJECT_ROOT/XTDrone}"',
+        'GAZEBO_MODELS_DIR="${GAZEBO_MODELS_DIR:-$PROJECT_ROOT/gazebo_models}"',
+        'XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"',
         'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
         'if ! official_root_is_readonly_mount "$PX4_DIR"; then',
         'echo "错误：sandbox 标记无效，PX4_DIR 并非独立只读挂载：$PX4_DIR" >&2',
         'if ! official_root_is_readonly_mount "$XTDRONE_DIR"; then',
         'echo "错误：sandbox 标记无效，XTDRONE_DIR 并非独立只读挂载：$XTDRONE_DIR" >&2',
+        'if ! official_root_is_readonly_mount "$GAZEBO_MODELS_DIR"; then',
+        'echo "错误：sandbox 标记无效，GAZEBO_MODELS_DIR 并非独立只读挂载：$GAZEBO_MODELS_DIR" >&2',
+        'if ! official_root_is_readonly_mount "$XTDRONE_PYTHONPATH"; then',
+        'echo "错误：sandbox 标记无效，XTDRONE_PYTHONPATH 并非独立只读挂载：$XTDRONE_PYTHONPATH" >&2',
         'echo "错误：缺少 bubblewrap，无法保护 PX4/XTDrone 官方目录。请运行 sudo apt install bubblewrap 后重试。" >&2',
         'if [ ! -d "$PX4_DIR" ] || [ -L "$PX4_DIR" ]; then',
         'echo "错误：PX4_DIR 必须是存在的普通目录且最终组件不能是符号链接：$PX4_DIR" >&2',
         'if [ ! -d "$XTDRONE_DIR" ] || [ -L "$XTDRONE_DIR" ]; then',
         'echo "错误：XTDRONE_DIR 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_DIR" >&2',
+        'if [ ! -d "$GAZEBO_MODELS_DIR" ] || [ -L "$GAZEBO_MODELS_DIR" ]; then',
+        'echo "错误：GAZEBO_MODELS_DIR 必须是存在的普通目录且最终组件不能是符号链接：$GAZEBO_MODELS_DIR" >&2',
+        'if [ ! -d "$XTDRONE_PYTHONPATH" ] || [ -L "$XTDRONE_PYTHONPATH" ]; then',
+        'echo "错误：XTDRONE_PYTHONPATH 必须是存在的普通目录且最终组件不能是符号链接：$XTDRONE_PYTHONPATH" >&2',
         'if ! resolved_px4="$(cd "$PX4_DIR" && pwd -P)"; then',
         'echo "错误：无法解析 PX4_DIR：$PX4_DIR" >&2',
         'if ! resolved_xtdrone="$(cd "$XTDRONE_DIR" && pwd -P)"; then',
         'echo "错误：无法解析 XTDRONE_DIR：$XTDRONE_DIR" >&2',
+        'if ! resolved_gazebo_models="$(cd "$GAZEBO_MODELS_DIR" && pwd -P)"; then',
+        'echo "错误：无法解析 GAZEBO_MODELS_DIR：$GAZEBO_MODELS_DIR" >&2',
+        'if ! resolved_xtdrone_pythonpath="$(cd "$XTDRONE_PYTHONPATH" && pwd -P)"; then',
+        'echo "错误：无法解析 XTDRONE_PYTHONPATH：$XTDRONE_PYTHONPATH" >&2',
         'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
-        '/usr/bin/setsid "$bwrap_path" --die-with-parent --json-status-fd "$status_fd" --dev-bind / / --ro-bind "$PX4_DIR" "$PX4_DIR" --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" "$SCRIPT_DIR/1.sh" "$@" &',
+        '/usr/bin/setsid "$bwrap_path" --die-with-parent --json-status-fd "$status_fd" --dev-bind / / --ro-bind "$PX4_DIR" "$PX4_DIR" --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" --ro-bind "$GAZEBO_MODELS_DIR" "$GAZEBO_MODELS_DIR" --ro-bind "$XTDRONE_PYTHONPATH" "$XTDRONE_PYTHONPATH" "$SCRIPT_DIR/1.sh" "$@" &',
         'require_file "$PX4_DIR/Tools/setup_gazebo.bash" "PX4 Gazebo 环境脚本"',
         'require_file "$PX4_BUILD_DIR/bin/px4" "PX4 SITL 编译产物"',
         'require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"',
@@ -89,7 +113,10 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'require_file "$XTDRONE_DIR/communication/multirotor_communication.py" "XTDrone 多旋翼通信脚本"',
         'require_file "$XTDRONE_DIR/sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf" "XTDrone 官方 Realsense 机型"',
         'require_file "$XTDRONE_DIR/sitl_config/models/realsense_camera/realsense_camera.sdf" "XTDrone 官方 Realsense 传感器"',
+        'require_file "$XTDRONE_PYTHONPATH/pyquaternion/__init__.py" "XTDrone Python 依赖"',
+        'require_file "$GAZEBO_MODELS_DIR/cessna/model.sdf" "Gazebo 官方场景模型"',
         'source "$PX4_DIR/Tools/setup_gazebo.bash" "$PX4_DIR" "$PX4_BUILD_DIR"',
+        'export PYTHONPATH="$XTDRONE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"',
         'export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:+${ROS_PACKAGE_PATH}:}$PX4_DIR:$PX4_DIR/Tools/sitl_gazebo"',
         'export GAZEBO_MODEL_PATH="$PX4_DIR/Tools/sitl_gazebo/models:$XTDRONE_DIR/sitl_config/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
         'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --gazebo-models-dir "$GAZEBO_MODELS_DIR" --xtdrone-pythonpath "$XTDRONE_PYTHONPATH" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
@@ -813,7 +840,10 @@ def _validate_disallowed_shell_constructs(script_text, filename):
             reason = "间接变量展开"
         elif "eval" in _shell_tokens(command):
             reason = "eval"
-        elif re.search(r"\$\(\s*env\s+(?:PX4_DIR|XTDRONE_DIR)\s*\)", command):
+        elif re.search(
+            r"\$\(\s*env\s*(?:PX4_DIR|XTDRONE_DIR|GAZEBO_MODELS_DIR|XTDRONE_PYTHONPATH)\s*\)",
+            command,
+        ):
             reason = "官方目录环境替换"
         elif "`" in command:
             reason = "反引号命令替换"

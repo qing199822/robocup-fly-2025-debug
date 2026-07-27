@@ -766,8 +766,12 @@ class OwnershipVerifierTest(unittest.TestCase):
         probes = (
             'touch "$PX4_DIR/file"',
             'rm -f "$XTDRONE_DIR/file"',
+            'touch "$GAZEBO_MODELS_DIR/file"',
+            'rm -f "$XTDRONE_PYTHONPATH/file"',
             "install input PX4_Firmware/file",
             "ln --symbolic source /opt/XTDrone/file",
+            "touch gazebo_models/file",
+            "rm -f /opt/.xtdrone-python/file",
         )
         for command in probes:
             with self.subTest(command=command):
@@ -778,6 +782,8 @@ class OwnershipVerifierTest(unittest.TestCase):
         unsafe_commands = (
             'touch "$PX4_DIR/official"\n',
             'rm -f "$XTDRONE_DIR/official"\n',
+            'touch "$GAZEBO_MODELS_DIR/official"\n',
+            'rm -f "$XTDRONE_PYTHONPATH/official"\n',
             'tee "$PX4_DIR/official" </dev/null\n',
             'install input "$XTDRONE_DIR/official"\n',
             'cp -t "$PX4_DIR" input\n',
@@ -814,6 +820,8 @@ class OwnershipVerifierTest(unittest.TestCase):
         unsafe_commands = (
             "touch PX4_Firmware/official\n",
             "rm -f /opt/XTDrone/official\n",
+            "touch gazebo_models/official\n",
+            "rm -f /opt/.xtdrone-python/official\n",
             'OFFICIAL_ROOT="$PX4_DIR"\ntouch "$OFFICIAL_ROOT/official"\n',
             'UPSTREAM="${XTDRONE_DIR}/models"\ncat "$UPSTREAM/model.sdf"\n',
             'cp "$PX4_DIR/input" "$WORKSPACE_DIR/output"\n',
