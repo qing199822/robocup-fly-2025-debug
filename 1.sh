@@ -24,6 +24,8 @@ COMPLIANCE_PYTHON="${COMPLIANCE_PYTHON:-/usr/bin/python3}"
 PREPARE_MODEL="$COMPLIANCE_PACKAGE_DIR/scripts/prepare_model.py"
 OFFICIAL_MANIFEST="$COMPLIANCE_PACKAGE_DIR/config/official_manifest.json"
 SENSOR_MOUNT_CONFIG="$COMPLIANCE_PACKAGE_DIR/config/sensor_mount.yaml"
+PROCESS_SUPERVISOR="$WORKSPACE_DIR/scripts/process_supervisor.py"
+SUPERVISOR_PYTHON="${SUPERVISOR_PYTHON:-/usr/bin/python3}"
 RUN_TMP_DIR=""
 GENERATED_MODEL=""
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
@@ -42,13 +44,14 @@ SIMULATION_PID=""
 COMMUNICATION_PID=""
 MISSION_PID=""
 PENDING_PID=""
+PENDING_START_TIME=""
 HELPER_PIDS=()
 OWNED_PIDS=()
-OWNED_PGIDS=()
 OWNED_GATE_DIRS=()
 DIRECT_FALLBACK_PIDS=()
 declare -A DIRECT_FALLBACK_START_TIMES=()
 declare -A OWNED_NAMES=()
+declare -A OWNED_START_TIMES=()
 declare -A OWNED_REAPED=()
 declare -A OWNED_STATUSES=()
 declare -A OWNED_GROUP_ESTABLISHED=()
@@ -316,7 +319,7 @@ process_is_running() {
     local stat_line state
 
     kill -0 "$pid" 2>/dev/null || return 1
-    IFS= read -r stat_line <"/proc/$pid/stat" 2>/dev/null || return 1
+    IFS= read -r stat_line 2>/dev/null <"/proc/$pid/stat" || return 1
     stat_line="${stat_line##*) }"
     state="${stat_line%% *}"
     [ "$state" != Z ]
@@ -328,22 +331,13 @@ process_start_time() {
     local minflt cminflt majflt cmajflt utime stime cutime cstime
     local priority nice num_threads itrealvalue start_time remainder
 
-    IFS= read -r stat_line <"/proc/$pid/stat" 2>/dev/null || return 1
+    IFS= read -r stat_line 2>/dev/null <"/proc/$pid/stat" || return 1
     stat_line="${stat_line##*) }"
     read -r state ppid pgrp session tty_nr tpgid flags \
         minflt cminflt majflt cmajflt utime stime cutime cstime \
         priority nice num_threads itrealvalue start_time remainder <<< "$stat_line"
     [ -n "$start_time" ] || return 1
     printf '%s\n' "$start_time"
-}
-
-group_is_running() {
-    local pgid="$1"
-
-    ps -eo pgid=,stat= 2>/dev/null | awk -v target="$pgid" '
-        $1 == target && $2 !~ /^Z/ { found = 1 }
-        END { exit(found ? 0 : 1) }
-    '
 }
 
 cleanup_logger_files() {
@@ -557,12 +551,29 @@ finish_logging() {
 register_owned_process() {
     local pid="$1"
     local name="$2"
+    local start_time
+
+    if ! start_time="$(process_start_time "$pid")"; then
+        echo "错误：无法记录${name}的进程身份（PID $pid）。" >&2
+        return 1
+    fi
 
     OWNED_PIDS+=("$pid")
     OWNED_NAMES["$pid"]="$name"
+    OWNED_START_TIMES["$pid"]="$start_time"
     OWNED_REAPED["$pid"]=false
     OWNED_GROUP_ESTABLISHED["$pid"]=false
     LAST_STARTED_PID="$pid"
+}
+
+owned_identity_matches() {
+    local pid="$1"
+    local current_start_time expected_start_time
+
+    expected_start_time="${OWNED_START_TIMES[$pid]:-}"
+    [ -n "$expected_start_time" ] || return 1
+    current_start_time="$(process_start_time "$pid")" || return 1
+    [ "$current_start_time" = "$expected_start_time" ]
 }
 
 owned_group_wrapper() {
@@ -588,15 +599,20 @@ owned_group_wrapper() {
         group_ready_file="$1"
         start_file="$2"
         command_started_file="$3"
-        shift 3
+        supervisor_python="$4"
+        process_supervisor="$5"
+        cleanup_grace_seconds="$6"
+        shift 6
         touch "$group_ready_file" || exit 125
         while [ ! -e "$start_file" ]; do
             [ -d "${start_file%/*}" ] || exit 130
             sleep 0.01
         done
         touch "$command_started_file" || exit 125
-        exec "$@"
-    ' -- "$group_ready_file" "$start_file" "$command_started_file" "$@"
+        exec "$supervisor_python" "$process_supervisor" \
+            --grace-seconds "$cleanup_grace_seconds" -- "$@"
+    ' -- "$group_ready_file" "$start_file" "$command_started_file" \
+        "$SUPERVISOR_PYTHON" "$PROCESS_SUPERVISOR" "$CLEANUP_GRACE_SECONDS" "$@"
 }
 
 cleanup_owned_gate_dir() {
@@ -660,12 +676,17 @@ start_owned_group() {
         "$group_ready_file" "$start_file" "$command_started_file" "$@" &
     PENDING_PID=$!
     pid="$PENDING_PID"
+    if ! PENDING_START_TIME="$(process_start_time "$PENDING_PID")"; then
+        echo "错误：无法记录${name}进程门控的身份（PID $PENDING_PID）。" >&2
+        return 1
+    fi
     deadline=$(( $(current_milliseconds) + 5000 ))
 
     while [ ! -e "$ready_file" ]; do
         if ! process_is_running "$PENDING_PID"; then
             wait "$PENDING_PID" 2>/dev/null || true
             PENDING_PID=""
+            PENDING_START_TIME=""
             echo "错误：${name}进程门控在登记前退出。" >&2
             return 1
         fi
@@ -677,7 +698,7 @@ start_owned_group() {
         sleep_milliseconds 10
     done
 
-    register_owned_process "$PENDING_PID" "$name"
+    register_owned_process "$PENDING_PID" "$name" || return 1
     touch "$release_file" || return 1
 
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
@@ -691,8 +712,8 @@ start_owned_group() {
         pgid="${pgid//[[:space:]]/}"
         if [ -e "$acknowledged_file" ] && [ -e "$group_ready_file" ] && [ "$pgid" = "$pid" ]; then
             OWNED_GROUP_ESTABLISHED["$pid"]=true
-            OWNED_PGIDS+=("$pid")
             PENDING_PID=""
+            PENDING_START_TIME=""
             touch "$start_file" || return 1
             while [ ! -e "$command_started_file" ]; do
                 if ! process_is_running "$pid"; then
@@ -726,7 +747,7 @@ reap_if_exited() {
         LAST_PROCESS_STATUS="${OWNED_STATUSES[$pid]}"
         return 0
     fi
-    if process_is_running "$pid"; then
+    if owned_identity_matches "$pid" && process_is_running "$pid"; then
         return 1
     fi
     if wait "$pid"; then
@@ -772,19 +793,11 @@ report_early_exit() {
 check_owned_dependency() {
     local pid="$1"
     local context="$2"
-    local allow_live_group_after_zero="$3"
-    local status
 
     if ! reap_if_exited "$pid"; then
         return 0
     fi
-    status="$LAST_PROCESS_STATUS"
-    if "$allow_live_group_after_zero" && [ "$status" -eq 0 ] \
-        && [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ] \
-        && group_is_running "$pid"; then
-        return 0
-    fi
-    echo "错误：${OWNED_NAMES[$pid]}在${context}期间退出（状态 $status）。" >&2
+    echo "错误：${OWNED_NAMES[$pid]}在${context}期间退出（状态 $LAST_PROCESS_STATUS）。" >&2
     return 1
 }
 
@@ -794,13 +807,13 @@ check_required_processes() {
 
     check_logger_health || return 1
     if [ -n "$SIMULATION_PID" ]; then
-        check_owned_dependency "$SIMULATION_PID" "$context" false || return 1
+        check_owned_dependency "$SIMULATION_PID" "$context" || return 1
     fi
     if [ -n "$COMMUNICATION_PID" ]; then
-        check_owned_dependency "$COMMUNICATION_PID" "$context" false || return 1
+        check_owned_dependency "$COMMUNICATION_PID" "$context" || return 1
     fi
     for pid in "${HELPER_PIDS[@]}"; do
-        check_owned_dependency "$pid" "$context" true || return 1
+        check_owned_dependency "$pid" "$context" || return 1
     done
     return 0
 }
@@ -808,27 +821,62 @@ check_required_processes() {
 owned_target_is_running() {
     local pid="$1"
 
-    if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
-        group_is_running "$pid"
-    else
-        process_is_running "$pid"
-    fi
+    owned_identity_matches "$pid" || return 1
+    process_is_running "$pid"
 }
 
 collect_direct_process_tree() {
     local root_pid="$1"
-    local child start_time
+    local deadline="$2"
+    local child expected_start_time now remaining snapshot start_time timeout_value
 
-    start_time="$(process_start_time "$root_pid")" || return
-    if [ -z "${DIRECT_FALLBACK_START_TIMES[$root_pid]+tracked}" ]; then
-        DIRECT_FALLBACK_START_TIMES["$root_pid"]="$start_time"
-        DIRECT_FALLBACK_PIDS+=("$root_pid")
-    elif [ "${DIRECT_FALLBACK_START_TIMES[$root_pid]}" != "$start_time" ]; then
-        return
+    expected_start_time="${DIRECT_FALLBACK_START_TIMES[$root_pid]:-}"
+    if [ -z "$expected_start_time" ]; then
+        expected_start_time="${OWNED_START_TIMES[$root_pid]:-}"
     fi
-    for child in $(ps -eo pid=,ppid= 2>/dev/null \
-        | awk -v parent="$root_pid" '$2 == parent { print $1 }'); do
-        collect_direct_process_tree "$child"
+    if [ -z "$expected_start_time" ] \
+        && [ "$root_pid" = "$PENDING_PID" ]; then
+        expected_start_time="$PENDING_START_TIME"
+    fi
+    [ -n "$expected_start_time" ] || return
+    start_time="$(process_start_time "$root_pid")" || return
+    [ "$start_time" = "$expected_start_time" ] || return
+    if [ -z "${DIRECT_FALLBACK_START_TIMES[$root_pid]+tracked}" ]; then
+        DIRECT_FALLBACK_START_TIMES["$root_pid"]="$expected_start_time"
+        DIRECT_FALLBACK_PIDS+=("$root_pid")
+    fi
+
+    now="$(current_milliseconds)"
+    remaining=$((deadline - now))
+    [ "$remaining" -gt 0 ] || return
+    printf -v timeout_value '%d.%03ds' \
+        "$((remaining / 1000))" "$((remaining % 1000))"
+    snapshot="$(timeout "$timeout_value" ps -eo pid=,ppid= 2>/dev/null)" || return
+    for child in $(awk -v root="$root_pid" '
+        { parent[$1] = $2 }
+        END {
+            owned[root] = 1
+            changed = 1
+            while (changed) {
+                changed = 0
+                for (pid in parent) {
+                    if (!owned[pid] && owned[parent[pid]]) {
+                        owned[pid] = 1
+                        changed = 1
+                    }
+                }
+            }
+            for (pid in owned) {
+                if (pid != root && owned[pid]) print pid
+            }
+        }
+    ' <<< "$snapshot"); do
+        [ "$(current_milliseconds)" -lt "$deadline" ] || return
+        start_time="$(process_start_time "$child")" || continue
+        if [ -z "${DIRECT_FALLBACK_START_TIMES[$child]+tracked}" ]; then
+            DIRECT_FALLBACK_START_TIMES["$child"]="$start_time"
+            DIRECT_FALLBACK_PIDS+=("$child")
+        fi
     done
 }
 
@@ -846,12 +894,12 @@ direct_fallback_is_running() {
 signal_direct_process_tree() {
     local signal="$1"
     local root_pid="$2"
-    local first_index index pid
+    local deadline="$3"
+    local pid
 
-    first_index="${#DIRECT_FALLBACK_PIDS[@]}"
-    collect_direct_process_tree "$root_pid"
-    for ((index=${#DIRECT_FALLBACK_PIDS[@]} - 1; index >= first_index; index--)); do
-        pid="${DIRECT_FALLBACK_PIDS[$index]}"
+    collect_direct_process_tree "$root_pid" "$deadline"
+    for pid in "${DIRECT_FALLBACK_PIDS[@]}"; do
+        [ "$(current_milliseconds)" -lt "$deadline" ] || return
         if direct_fallback_is_running "$pid"; then
             kill "-$signal" "$pid" 2>/dev/null || true
         fi
@@ -861,11 +909,12 @@ signal_direct_process_tree() {
 signal_owned_target() {
     local signal="$1"
     local pid="$2"
+    local deadline="${3:-$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))}"
+
+    owned_identity_matches "$pid" || return 0
 
     if [ "${OWNED_GROUP_ESTABLISHED[$pid]:-false}" = true ]; then
-        # ROS children can create new sessions, so retain their guarded PIDs before the root exits.
-        signal_direct_process_tree "$signal" "$pid"
-        if group_is_running "$pid"; then
+        if process_is_running "$pid"; then
             if [ "$signal" = TERM ]; then
                 kill -TERM -- "-$pid" 2>/dev/null || true
             else
@@ -873,7 +922,7 @@ signal_owned_target() {
             fi
         fi
     elif process_is_running "$pid"; then
-        signal_direct_process_tree "$signal" "$pid"
+        signal_direct_process_tree "$signal" "$pid" "$deadline"
     fi
 }
 
@@ -888,21 +937,24 @@ cleanup() {
 
     echo
     echo "正在停止本脚本启动的节点..."
+    deadline=$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))
 
     pending_unregistered=""
     if [ -n "$PENDING_PID" ] && [ -z "${OWNED_NAMES[$PENDING_PID]+registered}" ]; then
         pending_unregistered="$PENDING_PID"
-        if process_is_running "$pending_unregistered"; then
-            signal_direct_process_tree TERM "$pending_unregistered"
+        if process_is_running "$pending_unregistered" \
+            && [ -n "$PENDING_START_TIME" ]; then
+            DIRECT_FALLBACK_START_TIMES["$pending_unregistered"]="$PENDING_START_TIME"
+            DIRECT_FALLBACK_PIDS+=("$pending_unregistered")
+            signal_direct_process_tree TERM "$pending_unregistered" "$deadline"
         fi
     fi
 
     for ((index=${#OWNED_PIDS[@]} - 1; index >= 0; index--)); do
         pid="${OWNED_PIDS[$index]}"
-        signal_owned_target TERM "$pid"
+        signal_owned_target TERM "$pid" "$deadline"
     done
 
-    deadline=$(( $(current_milliseconds) + CLEANUP_GRACE_SECONDS * 1000 ))
     while [ "$(current_milliseconds)" -lt "$deadline" ]; do
         active=false
         if [ -n "$pending_unregistered" ] \
@@ -935,7 +987,7 @@ cleanup() {
     for pid in "${OWNED_PIDS[@]}"; do
         if owned_target_is_running "$pid"; then
             echo "进程组 ${OWNED_NAMES[$pid]} 未响应 TERM，发送 KILL。" >&2
-            signal_owned_target KILL "$pid"
+            signal_owned_target KILL "$pid" "$deadline"
         fi
     done
 
@@ -970,13 +1022,6 @@ cleanup() {
             CLEANUP_STATUS=1
         fi
     done
-    for pid in "${OWNED_PGIDS[@]}"; do
-        if group_is_running "$pid"; then
-            echo "错误：进程组 ${OWNED_NAMES[$pid]} 未在清理期限内退出。" >&2
-            CLEANUP_STATUS=1
-        fi
-    done
-
     for pid in "${OWNED_PIDS[@]}"; do
         if ! reap_if_exited "$pid"; then
             echo "错误：无法在清理期限内回收 ${OWNED_NAMES[$pid]}（PID $pid）。" >&2
@@ -993,6 +1038,7 @@ cleanup() {
         fi
     fi
     PENDING_PID=""
+    PENDING_START_TIME=""
     cleanup_owned_gate_files
 
     if [ -n "$RUN_TMP_DIR" ]; then
@@ -1279,6 +1325,8 @@ main() {
     require_file "$XTDRONE_PYTHONPATH/pyquaternion/__init__.py" "XTDrone Python 依赖"
     require_file "$GAZEBO_MODELS_DIR/cessna/model.sdf" "Gazebo 官方场景模型"
     require_file "$COMPLIANCE_PYTHON" "合规自检 Python 环境"
+    require_file "$SUPERVISOR_PYTHON" "进程监督 Python 环境"
+    require_file "$PROCESS_SUPERVISOR" "本项目进程监督器"
     require_file "$PREPARE_MODEL" "合规模型生成器"
     require_file "$OFFICIAL_MANIFEST" "官方依赖校验清单"
     require_file "$SENSOR_MOUNT_CONFIG" "Realsense 安装配置"

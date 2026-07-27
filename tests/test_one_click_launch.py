@@ -32,6 +32,12 @@ class LauncherHarness:
             (ROOT / "1.sh").read_text(encoding="utf-8"), encoding="utf-8"
         )
         (self.workspace / "1.sh").chmod(0o755)
+        supervisor_source = ROOT / "scripts/process_supervisor.py"
+        self._workspace_file(
+            "scripts/process_supervisor.py",
+            supervisor_source.read_text(encoding="utf-8"),
+            True,
+        )
         self._create_required_files()
         self._create_command_stubs()
 
@@ -47,6 +53,7 @@ class LauncherHarness:
                 "XTDRONE_PYTHONPATH": str(self.pythonpath),
                 "XTDRONE_PYTHON": str(self.bin / "communication-python"),
                 "COMPLIANCE_PYTHON": str(self.bin / "preflight-python"),
+                "SUPERVISOR_PYTHON": "/usr/bin/python3",
                 "ROS_SETUP_FILE": str(self.root / "ros-setup.bash"),
                 "TEE_BIN": str(self.bin / "tee"),
                 "READY_TIMEOUT_SECONDS": "5",
@@ -68,6 +75,8 @@ class LauncherHarness:
                 "HELPER_FAIL_DELAY": "0.4",
                 "MISSION_DURATION": "3",
                 "IGNORE_TERM": "0",
+                "PS_TREE_DELAY": "0",
+                "LARGE_TREE_CHILDREN": "20",
                 "DISPLAY": ":99",
             }
         )
@@ -197,7 +206,9 @@ class LauncherHarness:
                 #!/bin/bash
                 if [ "$SIMULATION_MODE" = success ] \
                     || [ "$SIMULATION_MODE" = delayed_fail ] \
-                    || [ "$SIMULATION_MODE" = detached_child ]; then
+                    || [ "$SIMULATION_MODE" = detached_child ] \
+                    || [ "$SIMULATION_MODE" = detached_child_then_fail ] \
+                    || [ "$SIMULATION_MODE" = large_tree ]; then
                     echo /gazebo/get_world_properties
                     exit 0
                 fi
@@ -275,7 +286,8 @@ class LauncherHarness:
                     sleep "$SIMULATION_FAIL_DELAY"
                     exit 24
                 fi
-                if [ "$SIMULATION_MODE" = detached_child ]; then
+                if [ "$SIMULATION_MODE" = detached_child ] \
+                    || [ "$SIMULATION_MODE" = detached_child_then_fail ]; then
                     /usr/bin/setsid bash -c '
                         trap "exit 0" TERM
                         echo "$$" >> "$STATE_DIR/detached_child_pids"
@@ -287,6 +299,15 @@ class LauncherHarness:
                         sleep 0.01
                     done
                     [ -s "$STATE_DIR/detached_child_pids" ] || exit 25
+                    if [ "$SIMULATION_MODE" = detached_child_then_fail ]; then
+                        exit 24
+                    fi
+                fi
+                if [ "$SIMULATION_MODE" = large_tree ]; then
+                    for unused in $(seq 1 "$LARGE_TREE_CHILDREN"); do
+                        sleep 30 &
+                        echo "$!" >> "$STATE_DIR/large_tree_pids"
+                    done
                 fi
                 if [ "$IGNORE_TERM" = 1 ]; then
                     trap '' TERM
@@ -323,6 +344,20 @@ class LauncherHarness:
                     exit 0
                 fi
                 exec /usr/bin/tee "$@"
+                """
+            ),
+            True,
+        )
+        self._write(
+            "bin/ps",
+            textwrap.dedent(
+                """\
+                #!/bin/bash
+                if [ "$1" = -eo ] && [ "$2" = "pid=,ppid=" ] \
+                    && [ "$PS_TREE_DELAY" != 0 ]; then
+                    sleep "$PS_TREE_DELAY"
+                fi
+                exec /usr/bin/ps "$@"
                 """
             ),
             True,
@@ -495,6 +530,7 @@ class LauncherHarness:
             "setsid_pids",
             "setsid_descendant_pids",
             "detached_child_pids",
+            "large_tree_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -515,6 +551,7 @@ class LauncherHarness:
             "setsid_pids",
             "setsid_descendant_pids",
             "detached_child_pids",
+            "large_tree_pids",
         ):
             marker = self.state / marker_name
             if not marker.exists():
@@ -999,6 +1036,74 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
         )
         with self.assertRaises(ProcessLookupError):
             os.kill(detached_pid, 0)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_detached_owned_child_is_cleaned_after_root_exits_first(self):
+        result, elapsed = self.harness.run(
+            SIMULATION_MODE="detached_child_then_fail"
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        detached_pid = int(
+            (self.harness.state / "detached_child_pids").read_text().strip()
+        )
+        with self.assertRaises(ProcessLookupError):
+            os.kill(detached_pid, 0)
+        self.assertEqual([], self.harness.recorded_processes_still_exist())
+        self.assertFalse(self.harness.run_tmp_exists())
+
+    def test_reused_root_pid_identity_is_not_signaled(self):
+        unrelated = subprocess.Popen(["/bin/sleep", "30"])
+        identity_file = self.harness.state / "fake-root-start-time"
+        identity_file.write_text("100\n", encoding="ascii")
+        try:
+            probe = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        """\
+                        source "$LAUNCHER_SCRIPT"
+                        process_start_time() { cat "$IDENTITY_FILE"; }
+                        register_owned_process "$TARGET_PID" "reused root"
+                        printf '200\n' > "$IDENTITY_FILE"
+                        signal_owned_target TERM "$TARGET_PID"
+                        """
+                    ),
+                ],
+                env={
+                    **self.harness.env,
+                    "LAUNCHER_SCRIPT": str(self.harness.workspace / "1.sh"),
+                    "IDENTITY_FILE": str(identity_file),
+                    "TARGET_PID": str(unrelated.pid),
+                },
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=2,
+            )
+
+            self.assertEqual(0, probe.returncode, probe.stdout)
+            time.sleep(0.05)
+            self.assertIsNone(
+                unrelated.poll(), "cleanup signaled a process with a reused root PID"
+            )
+        finally:
+            if unrelated.poll() is None:
+                unrelated.terminate()
+            unrelated.wait(timeout=1)
+
+    def test_large_tree_discovery_is_inside_cleanup_deadline(self):
+        result, elapsed = self.harness.run(
+            SIMULATION_MODE="large_tree",
+            PS_TREE_DELAY="0.15",
+            timeout_seconds=5,
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 3, result.stdout)
         self.assertEqual([], self.harness.recorded_processes_still_exist())
         self.assertFalse(self.harness.run_tmp_exists())
 
