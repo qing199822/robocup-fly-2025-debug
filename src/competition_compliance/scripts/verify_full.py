@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shlex
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -32,7 +33,46 @@ _PLACEHOLDER_TOKENS = (
 _COMMENTED_IDENTITY = re.compile(
     r"<!--(?:(?!-->).)*<(?:author|maintainer)\b", re.DOTALL
 )
-_OFFICIAL_VARIABLES = ("$PX4_DIR", "${PX4_DIR}", "$XTDRONE_DIR", "${XTDRONE_DIR}")
+_PROTECTED_VARIABLE = re.compile(
+    r"\$(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?![A-Za-z0-9_])"
+    r"|\$\{(?:PX4_DIR|XTDRONE_DIR|PX4_BUILD_DIR)(?:[^}]*)\}"
+)
+_OFFICIAL_LITERAL_NAMES = {"PX4_Firmware", "XTDrone"}
+_OFFICIAL_LITERAL_PATH = re.compile(
+    r"(?:\b(?:PX4_Firmware|XTDrone)/|/(?:PX4_Firmware|XTDrone)(?:/|[\"'}\s]|$))"
+)
+_DIRECT_WRITE_COMMANDS = {
+    "chmod",
+    "chown",
+    "cp",
+    "dd",
+    "install",
+    "mv",
+    "rm",
+    "rsync",
+    "tee",
+    "touch",
+    "truncate",
+}
+_ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
+    {
+        'PX4_DIR="${PX4_DIR:-$PROJECT_ROOT/PX4_Firmware}"',
+        'XTDRONE_DIR="${XTDRONE_DIR:-$PROJECT_ROOT/XTDrone}"',
+        'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
+        'require_file "$PX4_DIR/Tools/setup_gazebo.bash" "PX4 Gazebo 环境脚本"',
+        'require_file "$PX4_BUILD_DIR/bin/px4" "PX4 SITL 编译产物"',
+        'require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"',
+        'require_file "$XTDRONE_DIR/sitl_config/models/walker/walk_0.dae" "XTDrone 行人模型"',
+        'require_file "$XTDRONE_DIR/communication/multirotor_communication.py" "XTDrone 多旋翼通信脚本"',
+        'require_file "$XTDRONE_DIR/sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf" "XTDrone 官方 Realsense 机型"',
+        'require_file "$XTDRONE_DIR/sitl_config/models/realsense_camera/realsense_camera.sdf" "XTDrone 官方 Realsense 传感器"',
+        'source "$PX4_DIR/Tools/setup_gazebo.bash" "$PX4_DIR" "$PX4_BUILD_DIR"',
+        'export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:+${ROS_PACKAGE_PATH}:}$PX4_DIR:$PX4_DIR/Tools/sitl_gazebo"',
+        'export GAZEBO_MODEL_PATH="$PX4_DIR/Tools/sitl_gazebo/models:$XTDRONE_DIR/sitl_config/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
+        'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
+        'start_communication "$XTDRONE_PYTHON" "$XTDRONE_DIR/communication/multirotor_communication.py" || return 1',
+    }
+)
 
 
 def _unique_object(pairs):
@@ -285,32 +325,171 @@ def compare_trees(left, right):
             raise ComplianceError("XTDrone Actor 插件内容不同：{}".format(relative))
 
 
-def _contains_official_variable(value):
-    return any(marker in value for marker in _OFFICIAL_VARIABLES)
+def logical_shell_commands(script_text):
+    """Yield normalized backslash-continued commands with their first line."""
+    pending = []
+    start_line = None
+    for line_number, raw_line in enumerate(script_text.splitlines(), 1):
+        line = raw_line.rstrip()
+        if start_line is None:
+            start_line = line_number
+        continued = line.endswith("\\")
+        if continued:
+            line = line[:-1]
+        pending.append(line.strip())
+        if continued:
+            continue
+        command = re.sub(r"\s+", " ", " ".join(pending)).strip()
+        if command:
+            yield start_line, command
+        pending = []
+        start_line = None
+    if pending:
+        command = re.sub(r"\s+", " ", " ".join(pending)).strip()
+        if command:
+            yield start_line, command
 
 
-def _command_writes_official(line):
-    if _contains_official_variable(line) and re.search(r"\bsed\b[^\n]*\s-i(?:\s|$)", line):
-        return True
-    if re.search(r"(?:^|\s)(?:[0-9&]*>{1,2})\s*[\"']?\$(?:\{)?(?:PX4_DIR|XTDRONE_DIR)", line):
+def _shell_tokens(command):
+    try:
+        return shlex.split(command, comments=True, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def has_official_reference(command):
+    if _PROTECTED_VARIABLE.search(command):
         return True
     try:
-        tokens = shlex.split(line, comments=True)
+        tokens = shlex.split(command, comments=True, posix=True)
     except ValueError:
-        tokens = line.split()
-    for command in ("cp", "mv"):
-        if command not in tokens:
+        return bool(_OFFICIAL_LITERAL_PATH.search(command))
+    for token in tokens:
+        for component in token.split("/"):
+            normalized = component.strip("\"'{}()[],:;=+!? ")
+            if normalized in _OFFICIAL_LITERAL_NAMES:
+                return True
+    return False
+
+
+def _command_names(tokens):
+    names = set()
+    for token in tokens:
+        if not token or token.startswith("-") or "=" in token:
             continue
-        index = tokens.index(command)
-        segment = []
-        for token in tokens[index + 1 :]:
-            if token in (";", "&&", "||"):
-                break
-            if not token.startswith("-"):
-                segment.append(token)
-        if segment and _contains_official_variable(segment[-1]):
+        names.add(pathlib.PurePosixPath(token).name)
+    return names
+
+
+def _short_option_contains(option, letter):
+    return option.startswith("-") and not option.startswith("--") and letter in option[1:]
+
+
+def _is_in_place_sed(tokens):
+    if "sed" not in _command_names(tokens):
+        return False
+    return any(
+        token == "--in-place"
+        or token.startswith("--in-place=")
+        or _short_option_contains(token, "i")
+        for token in tokens
+    )
+
+
+def _is_symbolic_link_command(tokens):
+    if "ln" not in _command_names(tokens):
+        return False
+    return any(
+        token == "--symbolic"
+        or token.startswith("--symbolic=")
+        or _short_option_contains(token, "s")
+        for token in tokens
+    )
+
+
+def _redirects_to_official(command):
+    redirection = re.compile(
+        r"(?:^|[\s;|&])(?:[0-9]+|&)?(?:>>?|&>)\s*(?P<target>[^\s;|&]+)"
+    )
+    return any(
+        has_official_reference(match.group("target"))
+        for match in redirection.finditer(command)
+    )
+
+
+def command_has_write_intent(command):
+    tokens = _shell_tokens(command)
+    names = _command_names(tokens)
+    if names & _DIRECT_WRITE_COMMANDS:
+        return True
+    if _is_in_place_sed(tokens) or _is_symbolic_link_command(tokens):
+        return True
+    if _redirects_to_official(command):
+        return True
+    if "perl" in names and "-e" in tokens:
+        return True
+    if any(re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)?)?", name) for name in names):
+        if "-c" in tokens:
             return True
     return False
+
+
+def _validate_bash_syntax(script_path):
+    try:
+        completed = subprocess.run(
+            ["bash", "-n", str(script_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, UnicodeError) as error:
+        raise ComplianceError(
+            "无法执行 Bash 语法检查 {}：{}".format(script_path, error)
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "未知语法错误"
+        raise ComplianceError("比赛启动脚本 Bash 语法无效：{}".format(detail))
+
+
+def _validate_official_shell_references(script_text, filename):
+    """Enforce the checked entrypoint contract, not arbitrary shell semantics."""
+    for line_number, command in logical_shell_commands(script_text):
+        if not has_official_reference(command):
+            continue
+        location = "{}:{}".format(filename, line_number)
+        if command_has_write_intent(command):
+            raise ComplianceError(
+                "入口静态守卫检测到官方目录写入：{}：{}".format(
+                    location, command
+                )
+            )
+        if command not in _ALLOWED_OFFICIAL_SHELL_COMMANDS:
+            raise ComplianceError(
+                "入口静态守卫拒绝未知官方目录引用：{}：{}；"
+                "该引用不在当前入口只读许可中".format(location, command)
+            )
+
+
+def _validate_launch_official_references(launch_text, launch_path):
+    try:
+        launch_root = ET.fromstring(launch_text)
+    except ET.ParseError as error:
+        raise ComplianceError("比赛 launch XML 格式错误 {}：{}".format(launch_path, error)) from error
+    for element in launch_root.iter():
+        for name, value in element.attrib.items():
+            if has_official_reference(value):
+                raise ComplianceError(
+                    "比赛 launch 包含未经许可的官方目录引用：{} <{} {}={}>".format(
+                        launch_path, element.tag, name, value
+                    )
+                )
+        for value in (element.text, element.tail):
+            if value and has_official_reference(value):
+                raise ComplianceError(
+                    "比赛 launch 包含未经许可的官方目录文本引用：{} <{}>".format(
+                        launch_path, element.tag
+                    )
+                )
 
 
 def verify_entrypoints(root):
@@ -324,11 +503,16 @@ def verify_entrypoints(root):
         raise ComplianceError("无法读取比赛启动入口：{}".format(error)) from error
     if "typhoon_h480_zzufly" in launch_text + script_text:
         raise ComplianceError("比赛启动入口仍引用调试模型 typhoon_h480_zzufly")
-    if re.search(r"(?:^|[;&|]\s*|\n\s*)ln\s+-s(?:\s|$)", script_text):
-        raise ComplianceError("比赛启动脚本不得创建符号链接")
-    for line_number, line in enumerate(script_text.splitlines(), 1):
-        if _command_writes_official(line):
-            raise ComplianceError("比赛启动脚本试图向官方目录写入（第 {} 行）".format(line_number))
+    _validate_bash_syntax(script_path)
+    _validate_launch_official_references(launch_text, launch_path)
+    for line_number, command in logical_shell_commands(script_text):
+        if _is_symbolic_link_command(_shell_tokens(command)):
+            raise ComplianceError(
+                "比赛启动脚本不得创建符号链接：1.sh:{}：{}".format(
+                    line_number, command
+                )
+            )
+    _validate_official_shell_references(script_text, "1.sh")
 
 
 def validate_evidence_path(root, evidence):

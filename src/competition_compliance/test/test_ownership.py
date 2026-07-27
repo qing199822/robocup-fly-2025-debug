@@ -350,45 +350,123 @@ class OwnershipVerifierTest(unittest.TestCase):
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.compare_trees(left, right)
 
-    def test_entrypoints_may_read_but_must_not_write_official_inputs(self):
+    @staticmethod
+    def write_entrypoints(root, script_text, launch_text="<launch/>"):
+        (root / "robocup_zzufly.launch").write_text(
+            launch_text, encoding="utf-8"
+        )
+        (root / "1.sh").write_text(script_text, encoding="utf-8")
+
+    def test_repository_entrypoints_pass_the_static_official_input_guard(self):
+        self.module.verify_entrypoints(ROOT)
+
+    def test_shell_continuations_keep_the_starting_line_for_diagnostics(self):
+        self.assertEqual(
+            [(1, 'touch "$PX4_DIR/file"'), (3, "echo done")],
+            list(
+                self.module.logical_shell_commands(
+                    'touch \\\n  "$PX4_DIR/file"\necho done\n'
+                )
+            ),
+        )
+
+    def test_official_reference_and_write_intent_helpers_are_fail_closed(self):
+        probes = (
+            'touch "$PX4_DIR/file"',
+            'rm -f "$XTDRONE_DIR/file"',
+            "install input PX4_Firmware/file",
+            "ln --symbolic source /opt/XTDrone/file",
+        )
+        for command in probes:
+            with self.subTest(command=command):
+                self.assertTrue(self.module.has_official_reference(command))
+                self.assertTrue(self.module.command_has_write_intent(command))
+
+    def test_entrypoints_reject_all_known_official_directory_writes(self):
+        unsafe_commands = (
+            'touch "$PX4_DIR/official"\n',
+            'rm -f "$XTDRONE_DIR/official"\n',
+            'tee "$PX4_DIR/official" </dev/null\n',
+            'install input "$XTDRONE_DIR/official"\n',
+            'cp -t "$PX4_DIR" input\n',
+            'sed --in-place s/old/new/ "$PX4_DIR/file"\n',
+            'ln -sf source "$PX4_DIR/target"\n',
+            'mv --target-directory="${XTDRONE_DIR}" input\n',
+            'cp --target-directory="$PX4_DIR" input\n',
+            'cp -at "$PX4_DIR" input\n',
+            'sed -Ei.bak s/old/new/ "$PX4_DIR/file"\n',
+            'sed --in-place=.bak s/old/new/ "$PX4_DIR/file"\n',
+            'ln --symbolic --force source "$XTDRONE_DIR/target"\n',
+            'rm --force --recursive "$PX4_DIR/generated"\n',
+            'tee --append "$XTDRONE_DIR/official" </dev/null\n',
+            'install --mode=644 input "$PX4_DIR/official"\n',
+            'chmod --recursive 755 "$PX4_DIR/official"\n',
+            'chown -R user "$XTDRONE_DIR/official"\n',
+            'truncate --size 0 "$PX4_DIR/official"\n',
+            'dd if=/dev/null of="$XTDRONE_DIR/official"\n',
+            'rsync -a input "$PX4_DIR/official"\n',
+            'python3 -c \'open(__import__("sys").argv[1], "w").close()\' "$PX4_DIR/file"\n',
+            'perl -e \'open my $f, ">", $ARGV[0]\' "$XTDRONE_DIR/file"\n',
+            'printf changed > "$XTDRONE_DIR/official"\n',
+            'touch \\\n  "$PX4_DIR/continued"\n',
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            (root / "robocup_zzufly.launch").write_text(
-                "<launch><arg name=\"model_file\"/></launch>", encoding="utf-8"
-            )
-            script = root / "1.sh"
-            script.write_text(
-                'cp "$PX4_DIR/input" "$WORKSPACE_DIR/output"\n',
-                encoding="utf-8",
-            )
-            self.module.verify_entrypoints(root)
-
-            unsafe_commands = (
-                'cp "$WORKSPACE_DIR/input" "$PX4_DIR/output"\n',
-                'mv "$WORKSPACE_DIR/input" "${XTDRONE_DIR}/output"\n',
-                'sed -i s/old/new/ "$PX4_DIR/official"\n',
-                'printf changed > "$XTDRONE_DIR/official"\n',
-            )
             for command in unsafe_commands:
                 with self.subTest(command=command):
-                    script.write_text(command, encoding="utf-8")
-                    with self.assertRaisesRegex(
-                        self.module.ComplianceError, "官方目录.*写入"
-                    ):
+                    self.write_entrypoints(root, command)
+                    with self.assertRaises(self.module.ComplianceError):
                         self.module.verify_entrypoints(root)
+
+    def test_entrypoints_reject_literal_paths_aliases_and_unknown_reads(self):
+        unsafe_commands = (
+            "touch PX4_Firmware/official\n",
+            "rm -f /opt/XTDrone/official\n",
+            'OFFICIAL_ROOT="$PX4_DIR"\ntouch "$OFFICIAL_ROOT/official"\n',
+            'UPSTREAM="${XTDRONE_DIR}/models"\ncat "$UPSTREAM/model.sdf"\n',
+            'cp "$PX4_DIR/input" "$WORKSPACE_DIR/output"\n',
+            'cat "$XTDRONE_DIR/arbitrary"\n',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for command in unsafe_commands:
+                with self.subTest(command=command):
+                    self.write_entrypoints(root, command)
+                    with self.assertRaises(self.module.ComplianceError) as context:
+                        self.module.verify_entrypoints(root)
+                    message = str(context.exception)
+                    self.assertIn("1.sh:", message)
+                    self.assertIn(command.splitlines()[0].split()[0], message)
+
+    def test_entrypoints_reject_invalid_bash_syntax(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self.write_entrypoints(root, "if then\n")
+            with self.assertRaisesRegex(self.module.ComplianceError, "Bash 语法"):
+                self.module.verify_entrypoints(root)
+
+    def test_launch_rejects_official_directory_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self.write_entrypoints(
+                root,
+                "#!/bin/bash\n",
+                '<launch><node pkg="roslaunch" type="touch" '
+                'args="$PX4_DIR/official"/></launch>',
+            )
+            with self.assertRaisesRegex(
+                self.module.ComplianceError, "launch.*官方目录"
+            ):
+                self.module.verify_entrypoints(root)
 
     def test_entrypoints_reject_debug_model_and_symlink_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            launch = root / "robocup_zzufly.launch"
-            script = root / "1.sh"
-            script.write_text("#!/bin/bash\n", encoding="utf-8")
-            launch.write_text("typhoon_h480_zzufly", encoding="utf-8")
+            self.write_entrypoints(root, "#!/bin/bash\n", "typhoon_h480_zzufly")
             with self.assertRaisesRegex(self.module.ComplianceError, "调试模型"):
                 self.module.verify_entrypoints(root)
 
-            launch.write_text("<launch/>", encoding="utf-8")
-            script.write_text("ln -s source target\n", encoding="utf-8")
+            self.write_entrypoints(root, "ln -s source target\n")
             with self.assertRaisesRegex(self.module.ComplianceError, "符号链接"):
                 self.module.verify_entrypoints(root)
 
