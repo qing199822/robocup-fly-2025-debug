@@ -136,6 +136,7 @@ class LauncherHarness:
         for path in (
             "robocup_zzufly.launch",
             "src/competition_compliance/scripts/prepare_model.py",
+            "src/competition_compliance/scripts/prepare_world.py",
             "src/competition_compliance/config/official_manifest.json",
             "src/competition_compliance/config/sensor_mount.yaml",
             "devel/lib/libActorCollisionsPlugin.so",
@@ -292,6 +293,7 @@ class LauncherHarness:
                     fi
                     exit "$MISSION_MODE"
                 fi
+                printf '%s\\n' "$@" > "$STATE_DIR/simulation_args"
                 touch "$STATE_DIR/simulation_started"
                 echo "$$" > "$STATE_DIR/simulation_pid"
                 if [ "$SIMULATION_MODE" = fail ]; then
@@ -791,8 +793,8 @@ class OneClickLaunchTest(unittest.TestCase):
         script = self.script
         prepare = '"$COMPLIANCE_PYTHON" "$PREPARE_MODEL"'
         simulation_launch = (
-            'start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" '
-            'model_file:="$GENERATED_MODEL"'
+            'start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" \\\n'
+            '        model_file:="$GENERATED_MODEL" world:="$GENERATED_WORLD"'
         )
         self.assertIn(prepare, script)
         self.assertIn(simulation_launch, script)
@@ -911,6 +913,15 @@ class OneClickLaunchTest(unittest.TestCase):
             'GENERATED_MODEL="$RUN_TMP_DIR/typhoon_h480_realsense.sdf"', script
         )
 
+    def test_generated_world_is_private_run_output_and_passed_to_launch(self):
+        script = self.script
+        self.assertIn('GENERATED_WORLD=""', script)
+        self.assertIn('GENERATED_WORLD="$RUN_TMP_DIR/robocup.world"', script)
+        self.assertIn('"$COMPLIANCE_PYTHON" "$PREPARE_WORLD"', script)
+        self.assertIn('--input "$OFFICIAL_WORLD"', script)
+        self.assertIn('--output "$GENERATED_WORLD"', script)
+        self.assertIn('world:="$GENERATED_WORLD"', script)
+
 
 class OneClickLaunchBehaviorTest(unittest.TestCase):
     def setUp(self):
@@ -918,6 +929,29 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
 
     def tearDown(self):
         self.harness.close()
+
+    def test_simulation_receives_private_model_and_world_then_cleans_them(self):
+        result, elapsed = self.harness.run(MISSION_MODE="0")
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        run_tmp = pathlib.Path(
+            (self.harness.state / "run_tmp").read_text(encoding="utf-8").strip()
+        )
+        simulation_args = (
+            self.harness.state / "simulation_args"
+        ).read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "model_file:={}".format(
+                run_tmp / "typhoon_h480_realsense.sdf"
+            ),
+            simulation_args,
+        )
+        self.assertIn(
+            "world:={}".format(run_tmp / "robocup.world"),
+            simulation_args,
+        )
+        self.assertFalse(run_tmp.exists())
 
     def test_invalid_timeouts_fail_before_log_or_preflight_setup(self):
         invalid_values = {

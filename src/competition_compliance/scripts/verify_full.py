@@ -79,6 +79,7 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'GAZEBO_MODELS_DIR="${GAZEBO_MODELS_DIR:-$PROJECT_ROOT/gazebo_models}"',
         'XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"',
         'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
+        'OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"',
         'if ! official_root_is_readonly_mount "$PX4_DIR"; then',
         'echo "错误：sandbox 标记无效，PX4_DIR 并非独立只读挂载：$PX4_DIR" >&2',
         'if ! official_root_is_readonly_mount "$XTDRONE_DIR"; then',
@@ -105,10 +106,11 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'if ! resolved_xtdrone_pythonpath="$(cd "$XTDRONE_PYTHONPATH" && pwd -P)"; then',
         'echo "错误：无法解析 XTDRONE_PYTHONPATH：$XTDRONE_PYTHONPATH" >&2',
         'PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"',
+        'OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"',
         '/usr/bin/setsid "$bwrap_path" --die-with-parent --json-status-fd "$status_fd" --dev-bind / / --ro-bind "$PX4_DIR" "$PX4_DIR" --ro-bind "$XTDRONE_DIR" "$XTDRONE_DIR" --ro-bind "$GAZEBO_MODELS_DIR" "$GAZEBO_MODELS_DIR" --ro-bind "$XTDRONE_PYTHONPATH" "$XTDRONE_PYTHONPATH" "$SCRIPT_DIR/1.sh" "$@" &',
         'require_file "$PX4_DIR/Tools/setup_gazebo.bash" "PX4 Gazebo 环境脚本"',
         'require_file "$PX4_BUILD_DIR/bin/px4" "PX4 SITL 编译产物"',
-        'require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"',
+        'require_file "$OFFICIAL_WORLD" "RoboCup Gazebo 世界"',
         'require_file "$XTDRONE_DIR/sitl_config/models/walker/walk_0.dae" "XTDrone 行人模型"',
         'require_file "$XTDRONE_DIR/communication/multirotor_communication.py" "XTDrone 多旋翼通信脚本"',
         'require_file "$XTDRONE_DIR/sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf" "XTDrone 官方 Realsense 机型"',
@@ -120,6 +122,7 @@ _ALLOWED_OFFICIAL_SHELL_COMMANDS = frozenset(
         'export ROS_PACKAGE_PATH="${ROS_PACKAGE_PATH:+${ROS_PACKAGE_PATH}:}$PX4_DIR:$PX4_DIR/Tools/sitl_gazebo"',
         'export GAZEBO_MODEL_PATH="$XTDRONE_DIR/sitl_config/models:$PX4_DIR/Tools/sitl_gazebo/models:$GAZEBO_MODELS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"',
         'if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --gazebo-models-dir "$GAZEBO_MODELS_DIR" --xtdrone-pythonpath "$XTDRONE_PYTHONPATH" --manifest "$OFFICIAL_MANIFEST" --mount-config "$SENSOR_MOUNT_CONFIG" --output "$GENERATED_MODEL" >/dev/null; then',
+        'if ! "$COMPLIANCE_PYTHON" "$PREPARE_WORLD" --px4-dir "$PX4_DIR" --xtdrone-dir "$XTDRONE_DIR" --input "$OFFICIAL_WORLD" --output "$GENERATED_WORLD" >/dev/null; then',
         'start_communication "$XTDRONE_PYTHON" "$XTDRONE_DIR/communication/multirotor_communication.py" || return 1',
     }
 )

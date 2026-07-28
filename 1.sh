@@ -22,6 +22,8 @@ XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"
 COMPLIANCE_PACKAGE_DIR="$WORKSPACE_DIR/src/competition_compliance"
 COMPLIANCE_PYTHON="${COMPLIANCE_PYTHON:-/usr/bin/python3}"
 PREPARE_MODEL="$COMPLIANCE_PACKAGE_DIR/scripts/prepare_model.py"
+PREPARE_WORLD="$COMPLIANCE_PACKAGE_DIR/scripts/prepare_world.py"
+OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"
 OFFICIAL_MANIFEST="$COMPLIANCE_PACKAGE_DIR/config/official_manifest.json"
 SENSOR_MOUNT_CONFIG="$COMPLIANCE_PACKAGE_DIR/config/sensor_mount.yaml"
 PROCESS_SUPERVISOR="$WORKSPACE_DIR/scripts/process_supervisor.py"
@@ -29,6 +31,7 @@ PROCESS_SUPERVISOR_CLEANUP_FAILURE_STATUS=125
 SUPERVISOR_PYTHON="${SUPERVISOR_PYTHON:-/usr/bin/python3}"
 RUN_TMP_DIR=""
 GENERATED_MODEL=""
+GENERATED_WORLD=""
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
 COMMUNICATION_TIMEOUT_SECONDS="${COMMUNICATION_TIMEOUT_SECONDS:-20}"
 CAMERA_TIMEOUT_SECONDS="${CAMERA_TIMEOUT_SECONDS:-60}"
@@ -176,7 +179,8 @@ ensure_official_readonly_sandbox() {
     GAZEBO_MODELS_DIR="$resolved_gazebo_models"
     XTDRONE_PYTHONPATH="$resolved_xtdrone_pythonpath"
     PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
-    export PX4_DIR XTDRONE_DIR GAZEBO_MODELS_DIR XTDRONE_PYTHONPATH PX4_BUILD_DIR
+    OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"
+    export PX4_DIR XTDRONE_DIR GAZEBO_MODELS_DIR XTDRONE_PYTHONPATH PX4_BUILD_DIR OFFICIAL_WORLD
     export ROBOCUP_OFFICIAL_ROOTS_READONLY=1
 
     if ! status_dir="$(mktemp -d /tmp/robocup-fly-bwrap.XXXXXX)"; then
@@ -1379,7 +1383,7 @@ main() {
     require_file "$WORKSPACE_DIR/devel/setup.bash" "Catkin 工作空间环境脚本"
     require_file "$WORKSPACE_DIR/scripts/graphics_environment.sh" "Gazebo 图形环境脚本"
     require_file "$SIMULATION_LAUNCH" "六机仿真 launch 文件"
-    require_file "$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world" "RoboCup Gazebo 世界"
+    require_file "$OFFICIAL_WORLD" "RoboCup Gazebo 世界"
     require_file "$XTDRONE_DIR/sitl_config/models/walker/walk_0.dae" "XTDrone 行人模型"
     require_file "$XTDRONE_DIR/communication/multirotor_communication.py" "XTDrone 多旋翼通信脚本"
     require_file "$XTDRONE_PYTHON" "XTDrone Python 环境"
@@ -1389,6 +1393,7 @@ main() {
     require_file "$SUPERVISOR_PYTHON" "进程监督 Python 环境"
     require_file "$PROCESS_SUPERVISOR" "本项目进程监督器"
     require_file "$PREPARE_MODEL" "合规模型生成器"
+    require_file "$PREPARE_WORLD" "临时 Gazebo world 生成器"
     require_file "$OFFICIAL_MANIFEST" "官方依赖校验清单"
     require_file "$SENSOR_MOUNT_CONFIG" "Realsense 安装配置"
     require_file "$XTDRONE_DIR/sitl_config/models/typhoon_h480_realsense/typhoon_h480_realsense.sdf" "XTDrone 官方 Realsense 机型"
@@ -1414,6 +1419,7 @@ main() {
         return 1
     fi
     GENERATED_MODEL="$RUN_TMP_DIR/typhoon_h480_realsense.sdf"
+    GENERATED_WORLD="$RUN_TMP_DIR/robocup.world"
     echo "执行快速合规自检并生成临时模型..."
     if ! "$COMPLIANCE_PYTHON" "$PREPARE_MODEL" \
         --px4-dir "$PX4_DIR" \
@@ -1424,6 +1430,14 @@ main() {
         --mount-config "$SENSOR_MOUNT_CONFIG" \
         --output "$GENERATED_MODEL" >/dev/null; then
         echo "错误：快速合规自检或临时模型生成失败。" >&2
+        return 1
+    fi
+    if ! "$COMPLIANCE_PYTHON" "$PREPARE_WORLD" \
+        --px4-dir "$PX4_DIR" \
+        --xtdrone-dir "$XTDRONE_DIR" \
+        --input "$OFFICIAL_WORLD" \
+        --output "$GENERATED_WORLD" >/dev/null; then
+        echo "错误：临时 Gazebo world 生成失败。" >&2
         return 1
     fi
 
@@ -1444,7 +1458,8 @@ main() {
     echo "============================================"
 
     echo "启动 Gazebo、PX4 SITL 和 MAVROS..."
-    start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" model_file:="$GENERATED_MODEL" || return 1
+    start_owned_group "六机仿真" roslaunch "$SIMULATION_LAUNCH" \
+        model_file:="$GENERATED_MODEL" world:="$GENERATED_WORLD" || return 1
     SIMULATION_PID="$LAST_STARTED_PID"
 
     wait_for_simulator || return 1
