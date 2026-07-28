@@ -15,6 +15,7 @@ SINGLE_LAUNCH = (
     / "src/competition_compliance/launch/single_vehicle_spawn_clean.launch"
 )
 PACKAGE_XML = WORKSPACE / "src/competition_compliance/package.xml"
+COMPLIANCE_CMAKE = WORKSPACE / "src/competition_compliance/CMakeLists.txt"
 LOOK_UP_PACKAGE_XML = WORKSPACE / "src/look_up/package.xml"
 STATIC_TF_LAUNCH = WORKSPACE / "src/mix_nav/simple_navigator/launch/static_tf.launch"
 DOWN_RESUME_LAUNCH = WORKSPACE / "src/look_up/launch/down_resume.launch"
@@ -295,6 +296,11 @@ class SingleVehicleLaunchContractTest(unittest.TestCase):
 
 
 class PackageMetadataContractTest(unittest.TestCase):
+    def test_prepare_world_is_installed_and_tested(self):
+        cmake = COMPLIANCE_CMAKE.read_text(encoding="utf-8")
+        self.assertIn("scripts/prepare_world.py", cmake)
+        self.assertIn("catkin_add_nosetests(test/test_world.py)", cmake)
+
     def test_declares_installed_launch_runtime_dependencies(self):
         root = ET.parse(str(PACKAGE_XML)).getroot()
         dependencies = {
