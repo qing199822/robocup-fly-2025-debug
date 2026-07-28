@@ -1,0 +1,555 @@
+# AI Agent 项目交接手册
+
+这份文件写给第一次接触本仓库的 AI Agent。开始工作前先完整阅读本文件，再按任务涉及的模块阅读对应源码、测试和包内 `README.md`。不要仅凭聊天摘要或错误日志直接改代码。
+
+## 一分钟了解项目
+
+本项目是 2025 中国机器人大赛多旋翼无人机集群协同搜索仿真项目。运行环境是 ROS Noetic、Gazebo 11、PX4 1.11 和 XTDrone，比赛任务固定使用 6 架 `typhoon_h480_realsense`。
+
+`competition-clean` 是参赛候选分支。核心原则是：
+
+- PX4、XTDrone、Gazebo、官方模型和外部 Python 环境是只读输入。
+- 本仓库负责队伍的感知、坐标解算、起飞、任务管理、导航、目标分配、跟踪控制、TF 和合规检查。
+- 无人机基线模型不变。唯一允许生成的模型差异是 Realsense include 的安装位姿。
+- 启动器在运行前校验官方文件，在本次运行的临时目录生成模型，并在退出时只清理由本次启动登记的进程。
+- 发现底层兼容问题时，应修正队伍包或队伍脚本，不得通过改外部官方目录来适配。
+
+首先阅读这些权威文件：
+
+1. [README.md](../README.md)：项目入口和日常命令。
+2. [ENVIRONMENT.md](ENVIRONMENT.md)：固定版本、安装顺序和目录布局。
+3. [COMPLIANCE.md](COMPLIANCE.md)：比赛边界和官方文件哈希。
+4. [THIRD_PARTY.md](THIRD_PARTY.md)：第三方代码和权重许可状态。
+5. [TROUBLESHOOTING.md](TROUBLESHOOTING.md)：已知问题和诊断方法。
+6. [`ownership.json`](../src/competition_compliance/config/ownership.json)：仓库文件所有权分类。
+
+## 当前可信状态
+
+截至 2026-07-27，提交 `91e6e6f7dea64f966a401e1faadeefb47e8d3a72` 已完成以下验证：
+
+- 真实六机启动完成，6 个 MAVROS、6 个 XTDrone 通信节点、6 组 RGB/深度/CameraInfo 均就绪。
+- YOLO 检测、坐标解算和 `down_resume` 任务节点正常启动。
+- `scripts/smoke_competition_clean.sh` 最后一行为 `PASS competition-clean six-vehicle smoke`。
+- 启动终端按 `Ctrl-C` 后返回 `130`，本次 PX4、Gazebo、ROS、YOLO 和监督进程无残留。
+- 最终完整验证中，仓库 Python 测试 118 项通过；Catkin 汇总 116 项，0 error、0 failure。
+- PX4、XTDrone 和 Gazebo 官方输入通过静态及构建后哈希检查。
+
+公开仓库和分支：
+
+```text
+git@github.com:qing199822/robocup-fly-2025-debug.git
+branch: competition-clean
+```
+
+后续文档提交可能位于上述运行验证提交之后。新 Agent 必须用下面命令检查实际状态，不能假设工作树、远端或 HEAD 未变化：
+
+```bash
+git status --short --branch
+git log --oneline --decorate -12
+git remote -v
+```
+
+`public/main` 是社区调试分支，不得因为维护 `competition-clean` 而移动或覆盖。
+
+## 不可突破的修改边界
+
+### 外部只读输入
+
+以下目录不属于队伍维护范围：
+
+```text
+~/robocup_fly/PX4_Firmware
+~/robocup_fly/XTDrone
+~/robocup_fly/gazebo_models
+~/robocup_fly/.xtdrone-python
+~/robocup_fly/.venv-yolo
+```
+
+禁止改变这些内容来让队伍程序通过：
+
+- PX4 飞控、估计器、传感器驱动和 SITL 核心实现。
+- XTDrone 的通信脚本、官方模型和基础框架。
+- Gazebo 官方包、物理实现和系统模型库。
+- `typhoon_h480_realsense` 的机体几何结构。
+- Realsense 的光学、成像、量程、噪声和关节参数。
+
+完整官方哈希只维护在 [COMPLIANCE.md](COMPLIANCE.md) 和 [`official_manifest.json`](../src/competition_compliance/config/official_manifest.json)。不要在新文档或脚本中复制第二份哈希表。
+
+### 允许维护的内容
+
+可以修改：
+
+- `src/` 下的队伍 ROS 包和队伍自有 YOLO 代码。
+- 根目录的队伍 launch、任务配置及 `1.sh`。
+- `scripts/` 下的队伍构建、验证、图形环境和进程监督工具。
+- `waypoint/` 和队伍包内的任务 JSON，但必须保持比赛限高和障碍余量。
+- [`sensor_mount.yaml`](../src/competition_compliance/config/sensor_mount.yaml) 中的 6 个安装位姿数值。
+- 测试和项目文档。
+
+`sensor_mount.yaml` 只允许改变 Realsense 安装位置和角度。生成模型中必须仍只有一个 `model://realsense_camera` include，固定关节 parent 必须仍为 `base_link`。
+
+### 仓库内第三方文件
+
+`src/gazebo_ros_actor_plugin` 和 `src/darknet_ros_msgs` 包含有来源记录的第三方文件，不等同于队伍原创代码。修改前先查 [THIRD_PARTY.md](THIRD_PARTY.md) 和 `ownership.json`。需要适配时优先在队伍包边界增加调用代码，不要随意改逐字节核验的副本。
+
+## 仓库结构与模块职责
+
+| 路径 | 责任 |
+| --- | --- |
+| `1.sh` | 一键预检、启动顺序、存活检查、任务监督和有界清理 |
+| `robocup_zzufly.launch` | 六机 Gazebo、PX4 SITL 和 MAVROS 启动配置 |
+| `scripts/process_supervisor.py` | Linux subreaper；监督脱离会话的后代并按身份清理 |
+| `scripts/verify_competition_clean.sh` | 静态合规、单元测试、构建、Catkin 测试和构建后复核 |
+| `scripts/smoke_competition_clean.sh` | 运行中的六机 topic、node 和 Realsense TF 检查 |
+| `src/competition_compliance` | 官方 manifest、ownership、临时模型生成、固定 TF 和完整合规验证 |
+| `src/pose_init` | 将各飞机位姿整理到队伍使用的坐标链路 |
+| `src/mix_nav/fly` | 六机起飞逻辑和高度约束 |
+| `src/mix_nav/task_manager` | 多机任务和航点调度 |
+| `src/mix_nav/simple_navigator` | 航点导航、速度连续性和转向控制 |
+| `src/look_up` | 目标查询服务和 `down_resume` 总任务 launch |
+| `src/tracking` | 目标跟踪状态机、滤波、平滑和控制命令 |
+| `src/transform_tree` | 队伍需要的动态 TF 发布 |
+| `src/yolo` | 六路检测、深度与 CameraInfo 匹配、三维坐标解算 |
+| `waypoint` | 比赛任务 JSON、地图和路线辅助数据 |
+| `tests` | 启动器、边界、图形环境、验证脚本、相机几何和生命周期回归 |
+
+修改某个包前，先阅读该包的 `README.md`、`package.xml`、`CMakeLists.txt` 和测试。不要仅根据文件名推测接口。
+
+## 运行时数据流
+
+一键启动顺序：
+
+```text
+1.sh
+  -> 快速合规预检和本次运行的私有临时模型
+  -> Gazebo + 6 个 PX4 SITL + 6 个 MAVROS
+  -> 6 个 XTDrone 通信节点
+  -> 6 组 Realsense RGB / depth / CameraInfo 就绪检查
+  -> 6 个 YOLO worker + 6 个坐标解算节点
+  -> down_resume.launch
+  -> 起飞、任务管理、导航、目标服务和跟踪节点
+```
+
+感知链路概念图：
+
+```text
+Realsense RGB
+  -> yolo11n.py
+  -> actor_msgs/ActorInfo
+  -> bbox2coord_node.py + depth + CameraInfo + TF
+  -> 目标三维位置
+  -> look_up / tracking
+```
+
+控制命令必须经过 MUX：
+
+```text
+/typhoon_h480_N/tracking_node
+  -> /typhoon_h480_N/mux_inputs/external/pose_cmd
+  -> /typhoon_h480_N/pose_cmd_mux
+  -> /xtdrone/typhoon_h480_N/cmd_vel_flu
+```
+
+跟踪节点不能直接成为最终 XTDrone 速度话题的第二个发布者，否则会和任务导航命令竞争。
+
+清理链路：
+
+```text
+Ctrl-C
+  -> 1.sh 只处理已登记的 PID / PGID 和启动时间
+  -> process_supervisor 接管孤儿后代
+  -> TERM 宽限期
+  -> 对身份仍匹配的残留发送 KILL
+  -> 回收进程、删除本次临时模型和门控文件
+```
+
+## 环境、目录与变量
+
+固定环境组合：
+
+| 组件 | 已验证版本 |
+| --- | --- |
+| Ubuntu | 20.04.6 LTS |
+| ROS | Noetic 1.5.0 |
+| Gazebo Classic | 11.15.1 |
+| PX4 | `v1.11.0-beta1` |
+| MAVROS | 1.20.1 |
+| Python | 3.8.10 |
+| NVIDIA 驱动 | 535.230.02 |
+| PyTorch / Ultralytics | 2.1.2 CUDA 12.1 wheel / 8.3.40 |
+
+不要替换为 PX4 1.13；该版本在本项目中出现过相机无图问题。PX4 使用教程提供的约 1.2GB 完整归档，不用其他分支代替。
+
+默认目录：
+
+```text
+~/robocup_fly/
+|-- 2025_ZZU_FLY/       # 仓库主工作区或来源仓库
+|-- PX4_Firmware/       # 外部 PX4 1.11
+|-- XTDrone/            # 外部 XTDrone 8e88116
+|-- gazebo_models/      # 外部 Gazebo 模型
+|-- .venv-yolo/         # YOLO Python 环境
+`-- .xtdrone-python/    # XTDrone Python 依赖
+```
+
+如果使用 Git worktree，当前目录可能类似：
+
+```text
+~/robocup_fly/2025_ZZU_FLY/.worktrees/competition-clean
+```
+
+不要根据 `../` 猜外部依赖位置；显式设置环境变量：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY
+export PX4_DIR=${PX4_DIR:-$HOME/robocup_fly/PX4_Firmware}
+export XTDRONE_DIR=${XTDRONE_DIR:-$HOME/robocup_fly/XTDrone}
+export GAZEBO_MODELS_DIR=${GAZEBO_MODELS_DIR:-$HOME/robocup_fly/gazebo_models}
+export XTDRONE_PYTHONPATH=${XTDRONE_PYTHONPATH:-$HOME/robocup_fly/.xtdrone-python}
+export YOLO_PYTHON=${YOLO_PYTHON:-$HOME/robocup_fly/.venv-yolo/bin/python}
+export YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR:-$HOME/robocup_fly/.ultralytics}
+source /opt/ros/noetic/setup.bash
+```
+
+在 worktree 中，将第一条 `cd` 换成实际 worktree 的绝对路径，其余外部变量保持指向 `~/robocup_fly/` 下的只读依赖。
+
+## 程序使用命令
+
+### 首次或干净构建
+
+先确认 PX4 本身已经构建：
+
+```bash
+cd "$PX4_DIR"
+make px4_sitl_default gazebo
+```
+
+然后构建队伍工作区：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY
+source /opt/ros/noetic/setup.bash
+catkin_init_workspace src
+catkin_make -DCMAKE_BUILD_TYPE=Release
+bash scripts/build_xtdrone_actor_collisions.sh
+```
+
+Actor collision 插件从只读 XTDrone 输入构建到本工作区，不应在 XTDrone 目录产生修改。
+
+### 日常启动
+
+在图形桌面终端 A：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY
+bash 1.sh 6 mission_down.json
+```
+
+启动器会依次等待六机连接、通信节点、相机和队伍辅助节点。不要在等待过程中另开一套相同仿真。
+
+可选任务文件位于 `waypoint/`，但 `1.sh` 的参数只传文件名。例如：
+
+```bash
+bash 1.sh 6 mission_middle.json
+bash 1.sh 6 mission_up.json
+```
+
+修改任务前先确认比赛规则和航点测试仍适用。
+
+### 运行态六机检查
+
+终端 A 显示六路相机就绪并启动任务后，在终端 B：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY
+bash scripts/smoke_competition_clean.sh
+```
+
+成功报告写入 `logs/competition-clean/`，最后一行必须是：
+
+```text
+PASS competition-clean six-vehicle smoke
+```
+
+该检查要求每架飞机都有 MAVROS 状态、位置、RGB、深度、CameraInfo 和精确通信节点，并能查询 `base_link -> depth_camera_base`。
+
+### 停止程序
+
+回到终端 A，按一次 `Ctrl-C`，等待脚本完成清理并返回 shell。预期退出码是 `130`。
+
+不要直接关闭终端，不要按名称批量结束系统中的 ROS 进程。机器可能同时运行其他项目，只能处理本次启动器登记的会话。
+
+退出后检查：
+
+```bash
+pgrep -af 'px4|gzserver|gzclient|multirotor_communication.py|yolo11n.py|bbox2coord_node.py'
+find /tmp -maxdepth 1 -type d -name 'robocup-fly-competition-clean.*' -print
+git -C "$XTDRONE_DIR" status --short
+```
+
+解释：
+
+- 第一条不应列出本次运行的进程。注意 `pgrep` 可能显示检查命令自身，必须核对完整参数和 PID。
+- 第二条不应比启动前增加目录；历史目录不能未经归属核对就删除。
+- 第三条应为空，表示外部 XTDrone 没有被写入。
+
+### 查看日志
+
+```bash
+ls -lt logs/competition-clean/
+tail -n 120 logs/competition-clean/launch-*.log
+tail -n 120 logs/competition-clean/smoke-*.log
+ls -lt logs/verification/
+```
+
+优先保存最早出现的错误、命令、退出码和对应日志路径。长日志不要整份提交到 Git。
+
+## 修改和验证工作流
+
+### 开始修改前
+
+```bash
+git status --short --branch
+git diff --check
+python3 -m json.tool src/competition_compliance/config/ownership.json >/dev/null
+```
+
+然后：
+
+1. 在 `ownership.json` 查目标文件的类别。
+2. 阅读最接近的包 README、launch、接口和现有测试。
+3. 用日志或最小复现确认根因，不根据现象猜修复。
+4. 检查工作树中是否已有用户改动；不得覆盖或回退无关修改。
+
+### 行为修改
+
+先写一个能稳定复现问题的失败测试，确认它因目标缺陷失败；再做最小修改并看测试转为通过。重点测试真实行为，不要只检查源码是否包含某个字符串。
+
+常用聚焦测试示例：
+
+```bash
+python3 -m unittest tests.test_camera_geometry -v
+python3 -m unittest tests.test_one_click_launch -v
+python3 -m unittest tests.test_yolo_helper_lifecycle -v
+python3 -m unittest tests.test_verification_scripts -v
+python3 src/mix_nav/task_manager/test/test_mission_clearance.py
+```
+
+全仓 Python 回归：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Shell 或 Python 脚本变化还应执行：
+
+```bash
+bash -n 1.sh scripts/*.sh src/yolo/*.sh
+python3 -m py_compile scripts/process_supervisor.py
+git diff --check
+```
+
+### 完整验证
+
+环境、模型、launch、启动器、跨包接口或发布前变化必须运行：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY
+bash scripts/verify_competition_clean.sh
+```
+
+该脚本执行：
+
+1. 静态官方文件和所有权检查。
+2. 仓库 Python 单元测试。
+3. Release Catkin 构建。
+4. Actor collision 插件工作区外置构建。
+5. Catkin 测试和结果汇总。
+6. 构建后的第二次官方文件检查。
+
+最后应看到：
+
+```text
+完整验证通过：静态与构建后合规证据均已生成。
+```
+
+合规证据在：
+
+```text
+competition-artifacts/static-compliance.json
+competition-artifacts/post-build-compliance.json
+```
+
+完整验证通过不代替六机运行态 smoke；涉及运行流程的变化必须两者都做。
+
+## 常见故障排查
+
+### Gazebo 或相机没有画面
+
+先查启动日志是否有 `Can't open display` 或 `Rendering is disabled`。检查：
+
+```bash
+echo "$DISPLAY"
+echo "$XAUTHORITY"
+test -r "$XAUTHORITY" && echo readable
+pgrep -a gnome-shell
+```
+
+`1.sh` 会通过 `scripts/graphics_environment.sh` 导入桌面图形环境。不要把渲染失败误判为 YOLO 订阅错误，也不要更换 PX4 大版本绕过。
+
+确认相机必须实际收到消息：
+
+```bash
+for id in 0 1 2 3 4 5; do
+  timeout 5s rostopic echo -n 1 "/typhoon_h480_${id}/realsense/depth_camera/color/image_raw/header"
+  timeout 5s rostopic echo -n 1 "/typhoon_h480_${id}/realsense/depth_camera/depth/image_raw/header"
+done
+```
+
+只有 topic 名存在不代表传感器正常。
+
+### MAVROS 连接不完整
+
+```bash
+for id in 0 1 2 3 4 5; do
+  rostopic echo -n 1 "/typhoon_h480_${id}/mavros/state"
+done
+```
+
+每架都应显示 `connected: True`。部分连接时先完整停止本次六机启动、检查端口和残留，再整体重启；不要单独补启动某个编号。
+
+### YOLO 或坐标节点提前退出
+
+```bash
+rosnode list | sort | grep -E 'yolo11n|coordinate_estimator'
+tail -n 160 logs/competition-clean/launch-*.log
+```
+
+`src/yolo/multi_yolo_detecting.sh` 必须保持为 6 个 worker 的父监督脚本。修改它时要保留 PID 启动时间校验、启动阶段信号窗口处理、异常退出码传播和有界 TERM/KILL 清理。
+
+### 起飞后不进入 OFFBOARD
+
+PX4 接受 OFFBOARD 前必须持续收到 setpoint。正确顺序是六机连接、XTDrone 通信节点就绪、控制命令持续发布，然后启动任务。不要缩短 `1.sh` 的依赖存活检查来掩盖初始化错误。
+
+### 无人机超高或撞障碍
+
+任务高度必须低于 6 米。路线变化先运行航点净空测试，再进行真实 Gazebo 全航程回归。已知加油站不能在限高内从上方跨越，`mission_down.json` 采用先沿 `y=0` 绕过再向南转的路线。
+
+### Ctrl-C 后仍有进程
+
+先保留启动日志并核对本次启动登记的 PID、PGID 和启动时间。`1.sh` 与 `process_supervisor.py` 的安全合同包括：父进程提前退出、独立会话后代、PID 复用、单调时钟截止时间、TERM 后 KILL 和无关会话隔离。
+
+不要为了方便退回到按名称清理，也不要只在测试结束后宽泛扫系统进程。新增清理场景必须同时验证“本次进程被清掉”和“无关独立会话仍存活”。
+
+## Git 与交付规则
+
+### 提交前
+
+```bash
+git status --short
+git diff --check
+git diff --stat
+git diff
+```
+
+确认：
+
+- 只有任务要求的文件变化。
+- 没有构建产物、虚拟环境、日志、PX4 固件或官方模型。
+- `.vscode/settings.json` 和用户无关改动得到保留。
+- 相关测试和完整验证结果有明确退出码，不依赖“应该通过”的推测。
+
+### 提交
+
+```bash
+git add <本次明确修改的文件>
+git commit -m "<类型>: <简短说明>"
+git status --short --branch
+```
+
+不要使用会把工作树中所有文件一并加入的模糊操作。提交后再次核对 commit 内容。
+
+### 推送 competition-clean
+
+只有用户要求发布时才执行：
+
+```bash
+git push -u public competition-clean
+git ls-remote --heads public competition-clean
+```
+
+要求：
+
+- 不使用强制推送。
+- 不移动 `public/main`。
+- 本地 HEAD 与远端 `refs/heads/competition-clean` SHA 必须一致。
+- 推送后保留 worktree，方便继续处理审查意见。
+
+## 已知风险和维护重点
+
+- Gazebo Classic 11 已结束上游生命周期，但比赛环境固定使用它；不要在参赛分支进行新 Gazebo 迁移。
+- PX4 版本非常旧，必须按 manifest 固定；升级属于新的环境项目，不是普通修复。
+- `src/yolo/yolo11n_942.pt` 的再分发授权在现有资料中为 `NOASSERTION`，公开发布前需单独确认权利。
+- Realsense 位姿在软件上受约束，但物理合理性仍需队伍和裁判确认。
+- 进程身份检查存在 Linux PID 与 `/proc` 读取之间不可完全消除的微小竞态；不要降低现有 start-time 防护。
+- 启动器清理失败使用保留状态 `125`，受监督命令自然返回同一状态时日志可能表现为监督清理失败，但最终仍是非零失败。
+- 六机仿真资源消耗高。不能用减少实例、跳过相机或缩短就绪检查来让验收看起来更快。
+- `smoke` 证明消息和节点存在，不证明完整比赛路线安全；任务修改仍需全航程观察、限高和碰撞验证。
+
+## 新 Agent 首次接手清单
+
+按顺序完成：
+
+- [ ] 确认当前目录和分支是预期 worktree，而不是误在 `main`。
+- [ ] 运行 `git status --short --branch`，记录并保留用户现有改动。
+- [ ] 阅读本文件、README、COMPLIANCE、THIRD_PARTY 和目标包 README。
+- [ ] 在 `ownership.json` 中确认目标文件归属。
+- [ ] 确认 6 个外部环境变量指向实际只读依赖。
+- [ ] 运行与任务相关的最小现有测试，建立修改前基线。
+- [ ] 用日志、测试或最小复现确定根因。
+- [ ] 行为变化先写失败回归，再做最小修复。
+- [ ] 运行聚焦测试、全仓 Python 测试和静态检查。
+- [ ] 高风险或发布变化运行完整 verifier 和真实六机 smoke。
+- [ ] Ctrl-C 后检查进程、临时目录和 XTDrone 状态。
+- [ ] 复核 diff，只提交任务内文件。
+- [ ] 用户明确要求后才推送；不得改变公开主分支。
+
+## 交接结果模板
+
+后续 Agent 完成一轮维护时，用下面格式留下结果：
+
+```markdown
+### 目标
+
+一句话说明本轮要解决的问题。
+
+### 根因与边界
+
+- 根因：说明证据，不只描述现象。
+- 修改范围：列出队伍文件。
+- 官方输入：说明 PX4、XTDrone、Gazebo 和模型是否保持不变。
+
+### 修改
+
+- 文件路径：行为变化。
+- 文件路径：新增或更新的测试。
+
+### 验证
+
+- 命令：退出码和通过数量。
+- 完整 verifier：是否通过。
+- 六机 smoke：报告路径和最后一行。
+- Ctrl-C：退出码、进程残留、临时目录变化、XTDrone 状态。
+
+### Git
+
+- 分支：competition-clean
+- 提交：完整 SHA 和标题
+- 远端：是否推送；远端 SHA
+
+### 剩余风险
+
+只列已经确认、尚未解决且会影响下一位维护者的事项。
+```
+
+如果某项没有执行，必须明确写“未执行”及原因，不能省略后让下一位 Agent 误以为已经验证。

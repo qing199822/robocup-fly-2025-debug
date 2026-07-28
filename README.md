@@ -77,6 +77,8 @@ tail -n 80 logs/competition-clean/smoke-*.log
 
 常见故障和逐步诊断见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
+交给新的 AI Agent 维护前，请先让它完整阅读 [docs/AI_AGENT_HANDOFF.md](docs/AI_AGENT_HANDOFF.md)。
+
 ## 仓库边界
 
 算法包包括任务管理、导航、起飞、位姿转换、目标检测/坐标解算、跟踪和合规检查。生成的 `build/`、`devel/`、日志、外部 PX4/XTDrone/Gazebo 源码不会提交。提交问题时附上版本、启动命令、首次错误和 smoke 报告，不要上传完整固件或 Python 环境。
