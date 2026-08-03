@@ -36,6 +36,8 @@ Takeoff incomplete; keeping zero takeoff input selected.
 
 发布器必须启用 ROS 1 latch。`fly_takeoff` 构造完成后立即发布 `false`，确保后启动或重启的 tracking 节点能够立刻获得当前状态，而不是根据节点启动顺序猜测。
 
+ROS 1 的锁存值只在发布节点存活期间有效。因此成功发布 `true` 后，`confident_takeoff_node` 必须停止发送飞行命令但保持空闲存活，直至整套仿真关闭。失败路径可以退出，因为没有收到状态或发布者消失都按 `false` 处理。
+
 只有以下条件全部成立时才允许发布 `true`：
 
 1. 六架无人机均已收到位姿并到达允许误差内的目标高度；
