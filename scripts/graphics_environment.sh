@@ -11,7 +11,7 @@ ensure_graphics_environment() {
        { [ -n "${XAUTHORITY:-}" ] && [ ! -r "$XAUTHORITY" ]; }; then
         if [ -z "$session_environment" ]; then
             for process_name in gnome-shell plasmashell; do
-                desktop_pid="$(pgrep -n -u "$(id -u)" "$process_name" 2>/dev/null || true)"
+                desktop_pid="$(pgrep -n -x -u "$(id -u)" "$process_name" 2>/dev/null || true)"
                 if [ -n "$desktop_pid" ]; then
                     session_environment="/proc/$desktop_pid/environ"
                     break
