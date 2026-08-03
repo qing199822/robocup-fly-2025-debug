@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -17,7 +18,23 @@ OFFICIAL_MANIFEST = (
     ROOT / "src/competition_compliance/config/official_manifest.json"
 )
 VERIFY_FULL = ROOT / "src/competition_compliance/scripts/verify_full.py"
-XTDRONE = ROOT.parents[2] / "XTDrone"
+
+
+def _default_xtdrone_dir():
+    """在工作区自身及其各级父目录中查找只读 XTDrone 输入。
+
+    工作区可能位于 worktree 或平级目录，不能按固定层数向上取父目录。
+    """
+    for directory in (ROOT, *ROOT.parents):
+        candidate = directory / "XTDrone"
+        if candidate.is_dir():
+            return candidate
+    return ROOT.parent / "XTDrone"
+
+
+XTDRONE = pathlib.Path(
+    os.environ.get("XTDRONE_DIR", str(_default_xtdrone_dir()))
+)
 ACTOR_SOURCE = (
     XTDRONE / "sitl_config/gazebo_plugin/gazebo_ros_actor_plugin"
 )
