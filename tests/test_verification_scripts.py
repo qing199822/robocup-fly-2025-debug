@@ -258,6 +258,13 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             if [ "${FAIL_KIND:-}" = topic ] && [[ "$topic" == *typhoon_h480_2* ]]; then
                 exit 1
             fi
+            if [ "$topic" = /swarm/takeoff_complete ]; then
+                if [ "${FAIL_KIND:-}" = takeoff_gate ]; then
+                    echo "data: false"
+                else
+                    echo "data: true"
+                fi
+            fi
             ''',
         )
         write_executable(
@@ -339,6 +346,10 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 f"PASS node /typhoon_h480_{vehicle_id}/safety_filter", report
             )
         self.assertIn("publisher_guard", calls)
+        self.assertIn("topic /swarm/takeoff_complete", calls)
+        self.assertIn(
+            "PASS takeoff gate /swarm/takeoff_complete", report
+        )
         self.assertIn(
             "PASS final control topics have one safety_filter publisher each",
             report,
@@ -383,6 +394,15 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("publisher_guard", calls)
         self.assertIn("FAIL final control publisher ownership", report)
+        self.assertNotIn("PASS competition-clean six-vehicle smoke", report)
+
+    def test_smoke_closed_takeoff_gate_is_nonzero(self):
+        result, calls, report = self.run_smoke("takeoff_gate")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("topic /swarm/takeoff_complete", calls)
+        self.assertIn(
+            "FAIL takeoff gate /swarm/takeoff_complete", report
+        )
         self.assertNotIn("PASS competition-clean six-vehicle smoke", report)
 
     def test_smoke_rejects_symlinked_log_parent_without_external_write(self):

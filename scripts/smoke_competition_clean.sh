@@ -46,6 +46,19 @@ check_node() {
     log_line "PASS node $node"
 }
 
+check_true_boolean() {
+    local topic="$1" output
+
+    if ! output="$(
+        timeout "${SMOKE_TIMEOUT_SECONDS}s" \
+            rostopic echo -n 1 "$topic" 2>/dev/null
+    )" || ! grep -Eq '^data:[[:space:]]+true$' <<<"$output"; then
+        log_line "FAIL takeoff gate $topic" >&2
+        return 1
+    fi
+    log_line "PASS takeoff gate $topic"
+}
+
 check_sensor_tf() {
     local output status
 
@@ -115,6 +128,8 @@ for id in $(seq 0 5); do
     check_node "/typhoon_h480_${id}_communication"
     check_node "/typhoon_h480_${id}/safety_filter"
 done
+
+check_true_boolean "/swarm/takeoff_complete"
 
 if ! python3 "$WORKSPACE_DIR/scripts/check_final_control_publishers.py" \
     --count 6 --vehicle-type typhoon_h480 | tee -a "$REPORT"; then
