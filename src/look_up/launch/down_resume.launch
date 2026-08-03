@@ -31,36 +31,41 @@
     <!-- ========== 5. 目标管理 ========== -->
     <include file="$(find look_up)/launch/target_lookup_service.launch" />
 
-    <!-- ========== 6. 总控节点 ========== -->
+    <!-- ========== 6. 最终速度安全过滤 ========== -->
+    <include file="$(find safety_filter)/launch/safety_filter_swarm.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 7. 总控节点 ========== -->
     <include file="$(find look_up)/launch/spawn_mux_swarm.launch">
         <arg name="num_drones" value="$(arg num_drones)" />
     </include>
 
-    <!-- ========== 7. 起飞命令 ========== -->
+    <!-- ========== 8. 起飞命令 ========== -->
     <include file="$(find fly)/launch/fly.launch" />
 
-    <!-- ========== 8. 导航 ========== -->
+    <!-- ========== 9. 导航 ========== -->
     <include file="$(find simple_navigator)/launch/nav.launch">
         <arg name="num_drones" value="$(arg num_drones)" />
     </include>
 
-    <!-- ========== 9. 定点巡航 ========== -->
+    <!-- ========== 10. 定点巡航 ========== -->
     <include file="$(find task_manager)/launch/task.launch">
         <arg name="num_drones" value="$(arg num_drones)" />
         <arg name="mission_filename" value="$(arg mission_filename)" />
     </include>
 
-    <!-- ========== 10. 检测节点 (非roslaunch脚本，需单独处理) ========== -->
+    <!-- ========== 11. 检测节点 (非roslaunch脚本，需单独处理) ========== -->
     <!-- 原始命令: cd $HOME/ZZU_FLY/src/yolo && bash multi_yolo_detecting.sh -->
     <!-- 如已封装为 ROS 节点，取消下方注释 -->
     <!-- <node name="yolo_detecting" pkg="yolo" type="multi_yolo_detecting.sh" output="screen" /> -->
 
-    <!-- ========== 11. 追踪节点 ========== -->
+    <!-- ========== 12. 追踪节点 ========== -->
     <include file="$(find tracking)/launch/tracking.launch">
         <arg name="num_drones" value="$(arg num_drones)" />
     </include>
 
-    <!-- ========== 12. 坐标计算节点 (非roslaunch脚本，需单独处理) ========== -->
+    <!-- ========== 13. 坐标计算节点 (非roslaunch脚本，需单独处理) ========== -->
     <!-- 原始命令: cd $HOME/ZZU_FLY/src/yolo && bash multi_solving.sh -->
     <!-- 如已封装为 ROS 节点，取消下方注释 -->
     <!-- <node name="yolo_solving" pkg="yolo" type="multi_solving.sh" output="screen" /> -->

@@ -21,16 +21,21 @@ ConfidentTakeoff::ConfidentTakeoff(const std::string& drone_name, int drone_quan
     
     // 初始化发布器和订阅器
     for (int i = 0; i < drone_quantity_; ++i) {
+        const std::string vehicle = drone_name_ + "_" + std::to_string(i);
         // 创建命令发布器
-        std::string cmd_topic = "/xtdrone/" + drone_name_ + "_" + std::to_string(i) + "/cmd";
+        std::string cmd_topic = "/xtdrone/" + vehicle + "/cmd";
         cmd_pubs_.push_back(nh_.advertise<std_msgs::String>(cmd_topic, 1));
         
         // 创建速度发布器
-        std::string vel_topic = "/xtdrone/" + drone_name_ + "_" + std::to_string(i) + "/cmd_vel_flu";
+        std::string vel_topic = "/" + vehicle + "/mux_inputs/takeoff/cmd_vel";
         vel_pubs_.push_back(nh_.advertise<geometry_msgs::Twist>(vel_topic, 1));
+
+        const std::string service = "/" + vehicle + "/pose_cmd_mux/select";
+        mux_select_clients_.push_back(
+            nh_.serviceClient<topic_tools::MuxSelect>(service));
         
         // 创建位姿订阅器 - 使用lambda表达式绑定无人机ID
-        std::string pose_topic = "/" + drone_name_ + "_" + std::to_string(i) + "/mavros/local_position/pose";
+        std::string pose_topic = "/" + vehicle + "/mavros/local_position/pose";
         auto callback = [this, i](const geometry_msgs::PoseStamped::ConstPtr& msg) {
             this->poseCallback(msg, i);
         };
@@ -58,6 +63,29 @@ bool ConfidentTakeoff::allMissionDone() const {
     return true;
 }
 
+bool ConfidentTakeoff::selectControl(int drone_id,
+                                     const std::string& topic_name) {
+    topic_tools::MuxSelect request;
+    request.request.topic = topic_name;
+    auto& client = mux_select_clients_.at(drone_id);
+    if (!client.waitForExistence(ros::Duration(5.0))) {
+        ROS_ERROR("MUX service unavailable for drone %d", drone_id);
+        return false;
+    }
+    if (!client.call(request)) {
+        ROS_ERROR("Failed to select MUX input for drone %d", drone_id);
+        return false;
+    }
+    return true;
+}
+
+void ConfidentTakeoff::publishZeroVelocity() {
+    const geometry_msgs::Twist zero;
+    for (auto& publisher : vel_pubs_) {
+        publisher.publish(zero);
+    }
+}
+
 void ConfidentTakeoff::run() {
     ROS_INFO("Confident takeoff script started. Process will begin in 2 seconds.");
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -67,6 +95,17 @@ void ConfidentTakeoff::run() {
     // 创建爬升速度指令
     geometry_msgs::Twist climb_twist;
     climb_twist.linear.z = CLIMB_VELOCITY;
+
+    for (int i = 0; i < drone_quantity_; ++i) {
+        const std::string vehicle = drone_name_ + "_" + std::to_string(i);
+        const std::string takeoff_topic =
+            "/" + vehicle + "/mux_inputs/takeoff/cmd_vel";
+        if (!selectControl(i, takeoff_topic)) {
+            publishZeroVelocity();
+            ROS_ERROR("Takeoff aborted because MUX ownership was not confirmed.");
+            return;
+        }
+    }
     
     // 发送OFFBOARD和ARM指令
     std_msgs::String cmd_msg;
@@ -129,31 +168,48 @@ void ConfidentTakeoff::run() {
         rate_.sleep();
     }
     
-    if (allMissionDone()) {
-        ROS_INFO("All drones in the cluster have reached the target altitude!");
-    } else {
-        ROS_WARN("Mission ended, but not all drones confirmed reaching target altitude.");
-    }
-    
     ROS_INFO("Sending 'HOVER' command to stabilize and hand over control...");
-    
-    // 发送零速度指令
-    geometry_msgs::Twist zero_twist;
-    for (auto& pub : vel_pubs_) {
-        pub.publish(zero_twist);
-    }
-    
-    ros::Duration(0.1).sleep();
+
+    publishZeroVelocity();
+    ros::Duration(0.25).sleep();
     
     // 发送HOVER指令
     cmd_msg.data = "HOVER";
-    for (auto& pub : cmd_pubs_) {
-        for (int i = 0; i < 5; ++i) {
-            pub.publish(cmd_msg);
+    for (auto& publisher : cmd_pubs_) {
+        for (int repeat = 0; repeat < 5; ++repeat) {
+            publisher.publish(cmd_msg);
             rate_.sleep();
         }
     }
-    
+
+    if (!allMissionDone()) {
+        ROS_ERROR("Takeoff incomplete; keeping zero takeoff input selected.");
+        return;
+    }
+
+    ROS_INFO("All drones in the cluster have reached the target altitude!");
+    for (int i = 0; i < drone_quantity_; ++i) {
+        const std::string vehicle = drone_name_ + "_" + std::to_string(i);
+        const std::string navigator_topic =
+            "/" + vehicle + "/mux_inputs/navigator/cmd_vel";
+        if (!selectControl(i, navigator_topic)) {
+            ROS_ERROR("Navigator handoff failed for drone %d; rolling back all drones.", i);
+            for (int rollback_id = 0; rollback_id < drone_quantity_;
+                 ++rollback_id) {
+                const std::string rollback_vehicle =
+                    drone_name_ + "_" + std::to_string(rollback_id);
+                const std::string takeoff_topic =
+                    "/" + rollback_vehicle + "/mux_inputs/takeoff/cmd_vel";
+                if (!selectControl(rollback_id, takeoff_topic)) {
+                    ROS_ERROR("Failed to restore takeoff input for drone %d; safety watchdog remains active.",
+                              rollback_id);
+                }
+            }
+            publishZeroVelocity();
+            return;
+        }
+    }
+
     ROS_INFO("Cluster mission completed! Control has been handed over.");
 }
 

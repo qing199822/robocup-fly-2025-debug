@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="safety_filter" type="safety_filter_node"
+        name="safety_filter_under_test" required="true">
+    <param name="raw_command_topic" value="/test/raw_cmd"/>
+    <param name="odom_topic" value="/test/odom"/>
+    <param name="final_command_topic" value="/test/final_cmd"/>
+    <param name="status_topic" value="/test/status"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="command_timeout" value="0.15"/>
+    <param name="odom_timeout" value="0.15"/>
+    <param name="max_xy_acceleration" value="100.0"/>
+    <param name="max_z_acceleration" value="100.0"/>
+  </node>
+  <test test-name="safety_filter_node_test" pkg="safety_filter"
+        type="test_safety_filter_node.py" time-limit="15"/>
+</launch>

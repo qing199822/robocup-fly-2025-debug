@@ -69,6 +69,18 @@ TEST(SafetyPolicy, LimitsAccelerationFromPreviousOutput) {
   EXPECT_NEAR(0.1, result.command.linear.x, 1e-9);
 }
 
+TEST(SafetyPolicy, ResetClearsPreviousOutput) {
+  Limits limits;
+  limits.max_xy_speed = 10.0;
+  limits.max_xy_acceleration = 2.0;
+  SafetyPolicy policy(limits);
+  geometry_msgs::Twist input;
+  input.linear.x = 8.0;
+  EXPECT_NEAR(0.2, policy.apply(input, 3.0, 0.1).command.linear.x, 1e-9);
+  policy.reset();
+  EXPECT_NEAR(0.2, policy.apply(input, 3.0, 0.1).command.linear.x, 1e-9);
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

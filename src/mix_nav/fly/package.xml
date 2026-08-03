@@ -23,11 +23,13 @@
   <build_depend>roscpp</build_depend>
   <build_depend>geometry_msgs</build_depend>
   <build_depend>std_msgs</build_depend>
+  <build_depend>topic_tools</build_depend>
   
   <!-- 运行时依赖 -->
   <exec_depend>roscpp</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
 
   <test_depend>rosunit</test_depend>
   

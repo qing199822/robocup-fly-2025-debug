@@ -5,6 +5,7 @@
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <std_msgs/String.h>
+#include <topic_tools/MuxSelect.h>
 #include <string>
 #include <vector>
 #include <memory>
@@ -39,12 +40,15 @@ private:
      * @return 所有无人机完成任务返回true，否则返回false
      */
     bool allMissionDone() const;
+    bool selectControl(int drone_id, const std::string& topic_name);
+    void publishZeroVelocity();
 
     // ROS相关
     ros::NodeHandle nh_;
     std::vector<ros::Publisher> cmd_pubs_;
     std::vector<ros::Publisher> vel_pubs_;
     std::vector<ros::Subscriber> pose_subs_;
+    std::vector<ros::ServiceClient> mux_select_clients_;
     
     // 无人机参数
     std::string drone_name_;

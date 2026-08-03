@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="num_drones" default="6"/>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+
+  <group if="$(eval drone_id &lt; num_drones)">
+    <group ns="$(arg vehicle_type)_$(arg drone_id)">
+      <node pkg="safety_filter" type="safety_filter_node"
+            name="safety_filter" output="screen" required="true">
+        <rosparam command="load"
+                  file="$(find safety_filter)/config/default.yaml"/>
+        <param name="raw_command_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/control/raw_cmd_vel"/>
+        <param name="odom_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/global_odom"/>
+        <param name="final_command_topic"
+               value="/xtdrone/$(arg vehicle_type)_$(arg drone_id)/cmd_vel_flu"/>
+        <param name="status_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/safety/status"/>
+      </node>
+    </group>
+
+    <include file="$(find safety_filter)/launch/safety_filter_swarm.launch">
+      <arg name="num_drones" value="$(arg num_drones)"/>
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+      <arg name="drone_id" value="$(eval drone_id + 1)"/>
+    </include>
+  </group>
+</launch>

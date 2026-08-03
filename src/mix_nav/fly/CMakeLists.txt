@@ -10,13 +10,14 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   geometry_msgs
   std_msgs
+  topic_tools
 )
 
 # 设置包含目录
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES fly_takeoff
-  CATKIN_DEPENDS roscpp geometry_msgs std_msgs
+  CATKIN_DEPENDS roscpp geometry_msgs std_msgs topic_tools
   DEPENDS 
 )
 

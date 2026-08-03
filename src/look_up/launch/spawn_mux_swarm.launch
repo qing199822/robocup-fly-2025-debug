@@ -13,16 +13,17 @@
       <arg name="drone_id" value="$(eval num_drones - _counter)" />
       <!-- 打印一些日志，方便调试，确认启动了哪个ID -->
       <group ns="$(arg vehicle_type)_$(arg drone_id)">
-          <arg name="mux_output" value="/xtdrone/$(arg vehicle_type)_$(arg drone_id)/cmd_vel_flu"/>
-          <arg name="input_ego" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/navigator/cmd_vel"/>
+          <arg name="mux_output" value="/$(arg vehicle_type)_$(arg drone_id)/control/raw_cmd_vel"/>
+          <arg name="input_takeoff" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/takeoff/cmd_vel"/>
+          <arg name="input_navigator" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/navigator/cmd_vel"/>
           <arg name="input_external" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/external/pose_cmd"/>
           <arg name="mux_name" default="pose_cmd_mux"/>
 
           <!-- 启动一个MUX节点。使用<group>和ns，所有话题和服务都会自动带上无人机的前缀，例如服务会变成 /typhoon_h480_0/pose_cmd_mux/select -->
           <node pkg="topic_tools" type="mux" name="$(arg mux_name)"
-                args="$(arg mux_output) $(arg input_ego) $(arg input_external) mux:=$(arg mux_name)"
+                args="$(arg mux_output) $(arg input_takeoff) $(arg input_navigator) $(arg input_external) mux:=$(arg mux_name)"
                 output="screen">
-            <param name="initial_topic" value="$(arg input_ego)"/>
+            <param name="initial_topic" value="$(arg input_takeoff)"/>
           </node>
       </group>
       <!-- 递归调用自己！ -->
@@ -35,4 +36,3 @@
   </group>
 
 </launch>
-
