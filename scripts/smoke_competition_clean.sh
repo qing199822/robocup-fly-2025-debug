@@ -84,7 +84,7 @@ if ! source "$WORKSPACE_SETUP_FILE"; then
     fail "加载工作区环境失败：$WORKSPACE_SETUP_FILE"
 fi
 set -u
-for command_name in timeout rostopic rosnode rosrun grep tee mktemp realpath; do
+for command_name in python3 timeout rostopic rosnode rosrun grep tee mktemp realpath; do
     require_command "$command_name"
 done
 
@@ -111,8 +111,16 @@ for id in $(seq 0 5); do
     check_message "/typhoon_h480_${id}/realsense/depth_camera/color/image_raw"
     check_message "/typhoon_h480_${id}/realsense/depth_camera/depth/image_raw"
     check_message "/typhoon_h480_${id}/realsense/depth_camera/color/camera_info"
+    check_message "/typhoon_h480_${id}/safety/status"
     check_node "/typhoon_h480_${id}_communication"
+    check_node "/typhoon_h480_${id}/safety_filter"
 done
+
+if ! python3 "$WORKSPACE_DIR/scripts/check_final_control_publishers.py" \
+    --count 6 --vehicle-type typhoon_h480 | tee -a "$REPORT"; then
+    log_line "FAIL final control publisher ownership" >&2
+    exit 1
+fi
 
 # The clean launcher publishes one global fixed sensor mount transform.
 check_sensor_tf

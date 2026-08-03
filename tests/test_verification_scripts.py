@@ -96,9 +96,12 @@ class VerificationScriptsContractTest(unittest.TestCase):
             "realsense/depth_camera/color/image_raw",
             "realsense/depth_camera/depth/image_raw",
             "realsense/depth_camera/color/camera_info",
+            "safety/status",
         ):
             self.assertIn(suffix, text)
         self.assertIn('/typhoon_h480_${id}_communication', text)
+        self.assertIn('/typhoon_h480_${id}/safety_filter', text)
+        self.assertIn("check_final_control_publishers.py", text)
         self.assertIn("base_link", text)
         self.assertIn("depth_camera_base", text)
 
@@ -263,9 +266,20 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             #!/bin/bash
             printf 'nodes\n' >> "$SMOKE_CALLS"
             for id in $(seq 0 5); do
-                if [ "${FAIL_KIND:-}" = node ] && [ "$id" = 2 ]; then continue; fi
-                echo "/typhoon_h480_${id}_communication"
+                if [ "${FAIL_KIND:-}" != node ] || [ "$id" != 2 ]; then
+                    echo "/typhoon_h480_${id}_communication"
+                fi
+                echo "/typhoon_h480_${id}/safety_filter"
             done
+            ''',
+        )
+        write_executable(
+            fake_bin / "python3",
+            r'''
+            #!/bin/bash
+            printf 'publisher_guard %s\n' "$*" >> "$SMOKE_CALLS"
+            if [ "${FAIL_KIND:-}" = publisher ]; then exit 1; fi
+            echo "PASS final control topics have one safety_filter publisher each"
             ''',
         )
         write_executable(
@@ -317,10 +331,18 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         result, calls, report = self.run_smoke()
         self.assertEqual(0, result.returncode, result.stderr)
         for vehicle_id in range(6):
-            self.assertEqual(5, calls.count(f"typhoon_h480_{vehicle_id}/"))
+            self.assertEqual(6, calls.count(f"typhoon_h480_{vehicle_id}/"))
             self.assertIn(
                 f"PASS node /typhoon_h480_{vehicle_id}_communication", report
             )
+            self.assertIn(
+                f"PASS node /typhoon_h480_{vehicle_id}/safety_filter", report
+            )
+        self.assertIn("publisher_guard", calls)
+        self.assertIn(
+            "PASS final control topics have one safety_filter publisher each",
+            report,
+        )
         self.assertIn("tf tf_echo base_link depth_camera_base", calls)
         self.assertTrue(
             report.rstrip().endswith(
@@ -354,6 +376,13 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("tf tf_echo base_link depth_camera_base", calls)
         self.assertIn("FAIL TF base_link -> depth_camera_base", report)
+        self.assertNotIn("PASS competition-clean six-vehicle smoke", report)
+
+    def test_smoke_invalid_final_publisher_is_nonzero(self):
+        result, calls, report = self.run_smoke("publisher")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("publisher_guard", calls)
+        self.assertIn("FAIL final control publisher ownership", report)
         self.assertNotIn("PASS competition-clean six-vehicle smoke", report)
 
     def test_smoke_rejects_symlinked_log_parent_without_external_write(self):
