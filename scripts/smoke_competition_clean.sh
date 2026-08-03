@@ -52,7 +52,7 @@ check_true_boolean() {
     if ! output="$(
         timeout "${SMOKE_TIMEOUT_SECONDS}s" \
             rostopic echo -n 1 "$topic" 2>/dev/null
-    )" || ! grep -Eq '^data:[[:space:]]+true$' <<<"$output"; then
+    )" || ! grep -Eq '^data:[[:space:]]+(true|True)[[:space:]]*$' <<<"$output"; then
         log_line "FAIL takeoff gate $topic" >&2
         return 1
     fi

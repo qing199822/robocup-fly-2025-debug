@@ -561,3 +561,25 @@ git ls-remote --heads public competition-clean
 ```
 
 如果某项没有执行，必须明确写“未执行”及原因，不能省略后让下一位 Agent 误以为已经验证。
+
+## 2026-08-03 起飞门控与自动图形环境验收
+
+### 根因与修改边界
+
+- `1.sh` 原先进入 bubblewrap 只读隔离后才读取桌面进程环境；隔离内无法读取宿主桌面的 `/proc/<pid>/environ`，因此缺少 `DISPLAY` 时会在 Gazebo 启动前退出。
+- 启动器现在在进入只读隔离前调用本项目的图形环境探测，再把导出的变量自然传给内层进程；没有硬编码显示编号。
+- ROS Noetic 在本机将 `std_msgs/Bool` 输出为 `data: True`，smoke 原先只接受小写 `true`；判断现仅兼容 `true` 和 `True` 两种输出拼写，其他值仍拒绝。
+- 本轮只修改队伍启动脚本、smoke、测试和本文档。PX4、XTDrone、Gazebo、EGO、第三方插件与官方模型均未修改；验收后 `XTDrone` 工作树为空。
+
+### 自动化验证
+
+- 聚焦图形环境和 smoke 测试：22 项通过。
+- 完整 verifier：仓库 Python 134 项通过；Catkin 146 项，0 errors、0 failures；静态与构建后合规检查通过。
+- Codex 隔离内的首次 verifier 因 `netifaces.interfaces()` 被禁止读取网络接口而失败；在本机环境用相同 verifier 重跑后全部通过。这是工具隔离限制，不是项目失败。
+
+### 真实六机验收
+
+- 启动时显式清空 `DISPLAY`、`XAUTHORITY`、`XDG_RUNTIME_DIR` 和 `WAYLAND_DISPLAY`，启动器仍自动找到 `DISPLAY=:1` 并进入 Gazebo。完整日志：`logs/competition-clean/launch-20260803-220852-2puSP5.log`。
+- 日志记录六个 tracking 节点均收到起飞门控打开；无人机 0、2、5 随后锁定人物并成功把各自 MUX 切换到 external 输入，证明门控后跟踪接管链可运行。
+- smoke 报告：`logs/competition-clean/smoke-20260803-221012.8bXHsd.log`，最后一行为 `PASS competition-clean six-vehicle smoke`；其中起飞门控、最终发布者唯一性和传感器 TF 均通过。
+- 使用 Ctrl-C 正常停止，外层退出码 130；项目相关 Gazebo、PX4、roslaunch、XTDrone 通信和起飞节点无残留，competition-clean 临时目录无残留。

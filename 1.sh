@@ -181,6 +181,12 @@ ensure_official_readonly_sandbox() {
     PX4_BUILD_DIR="$PX4_DIR/build/px4_sitl_default"
     OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"
     export PX4_DIR XTDRONE_DIR GAZEBO_MODELS_DIR XTDRONE_PYTHONPATH PX4_BUILD_DIR OFFICIAL_WORLD
+
+    require_file "$WORKSPACE_DIR/scripts/graphics_environment.sh" "Gazebo 图形环境脚本"
+    # The outer process can inspect the desktop session; the sandbox cannot.
+    source "$WORKSPACE_DIR/scripts/graphics_environment.sh" || return 1
+    ensure_graphics_environment || return 1
+
     export ROBOCUP_OFFICIAL_ROOTS_READONLY=1
 
     if ! status_dir="$(mktemp -d /tmp/robocup-fly-bwrap.XXXXXX)"; then

@@ -235,6 +235,7 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         self,
         failure_kind="",
         tf_output="- Translation: [0.090, 0.000, -0.040]",
+        takeoff_output="data: true",
     ):
         workspace = self.root / "workspace"
         scripts = workspace / "scripts"
@@ -262,7 +263,7 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 if [ "${FAIL_KIND:-}" = takeoff_gate ]; then
                     echo "data: false"
                 else
-                    echo "data: true"
+                    echo "$TAKEOFF_OUTPUT"
                 fi
             fi
             ''',
@@ -308,17 +309,20 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 "SMOKE_TIMEOUT_SECONDS": "1",
                 "FAIL_KIND": failure_kind,
                 "TF_OUTPUT": tf_output,
+                "TAKEOFF_OUTPUT": takeoff_output,
             }
         )
         return workspace, environment, calls
 
-    def run_smoke(self, failure_kind="", tf_output=None):
-        if tf_output is None:
-            workspace, environment, calls = self.prepare_smoke(failure_kind)
-        else:
-            workspace, environment, calls = self.prepare_smoke(
-                failure_kind, tf_output
-            )
+    def run_smoke(self, failure_kind="", tf_output=None, takeoff_output=None):
+        prepare_kwargs = {}
+        if tf_output is not None:
+            prepare_kwargs["tf_output"] = tf_output
+        if takeoff_output is not None:
+            prepare_kwargs["takeoff_output"] = takeoff_output
+        workspace, environment, calls = self.prepare_smoke(
+            failure_kind, **prepare_kwargs
+        )
         result = subprocess.run(
             [str(workspace / "scripts" / SMOKE_VERIFIER.name)],
             cwd=self.root,
@@ -367,6 +371,33 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("PASS TF base_link -> depth_camera_base", report)
+
+    def test_smoke_accepts_ros_noetic_capitalized_true(self):
+        result, _calls, report = self.run_smoke(
+            takeoff_output="data: True"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(
+            "PASS takeoff gate /swarm/takeoff_complete", report
+        )
+
+    def test_smoke_rejects_all_uppercase_true(self):
+        result, _calls, report = self.run_smoke(
+            takeoff_output="data: TRUE"
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "FAIL takeoff gate /swarm/takeoff_complete", report
+        )
+
+    def test_smoke_rejects_mixed_case_true(self):
+        result, _calls, report = self.run_smoke(
+            takeoff_output="data: tRuE"
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "FAIL takeoff gate /swarm/takeoff_complete", report
+        )
 
     def test_smoke_missing_topic_fails_fast(self):
         result, calls, report = self.run_smoke("topic")
