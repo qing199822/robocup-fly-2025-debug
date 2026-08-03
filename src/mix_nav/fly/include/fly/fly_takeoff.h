@@ -4,6 +4,7 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 #include <topic_tools/MuxSelect.h>
 #include <string>
@@ -42,11 +43,13 @@ private:
     bool allMissionDone() const;
     bool selectControl(int drone_id, const std::string& topic_name);
     void publishZeroVelocity();
+    void publishTakeoffComplete(bool complete);
 
     // ROS相关
     ros::NodeHandle nh_;
     std::vector<ros::Publisher> cmd_pubs_;
     std::vector<ros::Publisher> vel_pubs_;
+    ros::Publisher takeoff_complete_pub_;
     std::vector<ros::Subscriber> pose_subs_;
     std::vector<ros::ServiceClient> mux_select_clients_;
     
@@ -58,8 +61,9 @@ private:
     // 控制参数
     const double CLIMB_VELOCITY = 0.8;
     const int RATE = 20;
-    const double timeout = 15.0;
     const double altitude_tolerance = 0.15;
+    double startup_delay_ = 2.0;
+    double takeoff_timeout_ = 15.0;
     
     // 状态变量
     std::vector<geometry_msgs::PoseStamped::ConstPtr> current_poses_;

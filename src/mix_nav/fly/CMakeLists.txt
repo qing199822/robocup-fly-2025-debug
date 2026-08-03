@@ -46,6 +46,10 @@ add_dependencies(fly_takeoff
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_fly_launch.py)
+  find_package(rostest REQUIRED)
+  add_rostest(test/takeoff_gate_success.test)
+  add_rostest(test/takeoff_gate_timeout.test)
+  add_rostest(test/takeoff_gate_handoff_failure.test)
 endif()
 
 # 安装目标

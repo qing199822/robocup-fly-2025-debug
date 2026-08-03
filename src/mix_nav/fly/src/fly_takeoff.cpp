@@ -2,9 +2,8 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
-#include <thread>
-#include <chrono>
 
 namespace fly {
 
@@ -13,6 +12,13 @@ ConfidentTakeoff::ConfidentTakeoff(const std::string& drone_name, int drone_quan
       drone_quantity_(drone_quantity),
       target_altitude_(target_altitude),
       rate_(RATE) {
+    ros::NodeHandle private_nh("~");
+    private_nh.param("startup_delay", startup_delay_, 2.0);
+    private_nh.param("takeoff_timeout", takeoff_timeout_, 15.0);
+
+    takeoff_complete_pub_ =
+        nh_.advertise<std_msgs::Bool>("/swarm/takeoff_complete", 1, true);
+    publishTakeoffComplete(false);
     
     // 初始化状态向量
     current_poses_.resize(drone_quantity_);
@@ -86,9 +92,16 @@ void ConfidentTakeoff::publishZeroVelocity() {
     }
 }
 
+void ConfidentTakeoff::publishTakeoffComplete(bool complete) {
+    std_msgs::Bool message;
+    message.data = complete;
+    takeoff_complete_pub_.publish(message);
+}
+
 void ConfidentTakeoff::run() {
-    ROS_INFO("Confident takeoff script started. Process will begin in 2 seconds.");
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    ROS_INFO("Confident takeoff script started. Process will begin in %.2f seconds.",
+             startup_delay_);
+    ros::Duration(startup_delay_).sleep();
     
     ROS_INFO("[Step 1] Sending velocity commands and requesting OFFBOARD and ARM...");
     
@@ -129,7 +142,8 @@ void ConfidentTakeoff::run() {
     
     while (ros::ok() && !allMissionDone()) {
         // 检查超时
-        if ((ros::Time::now() - mission_start_time).toSec() > timeout) {
+        if ((ros::Time::now() - mission_start_time).toSec() >
+            takeoff_timeout_) {
             ROS_ERROR("Mission timeout!");
             break;
         }
@@ -210,7 +224,10 @@ void ConfidentTakeoff::run() {
         }
     }
 
+    publishTakeoffComplete(true);
     ROS_INFO("Cluster mission completed! Control has been handed over.");
+    ROS_INFO("Takeoff gate is open; keeping latched status publisher alive.");
+    ros::spin();
 }
 
 } // namespace fly
