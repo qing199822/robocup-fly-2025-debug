@@ -35,6 +35,9 @@
   <exec_depend>topic_tools</exec_depend>
   <exec_depend>look_up</exec_depend>
 
+  <test_depend>rospy</test_depend>
+  <test_depend>rostest</test_depend>
+
   <!-- 
     注意: Eigen库是一个系统依赖，而不是一个标准的ROS包。
     我们通过CMakeLists.txt中的find_package(Eigen3)来找到它。

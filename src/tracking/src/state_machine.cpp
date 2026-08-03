@@ -50,6 +50,9 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
                                     const geometry_msgs::Pose& current_pose,
                                     const geometry_msgs::Twist& current_velocity_body)
 {
+    if (!takeoff_complete_) {
+        return;
+    }
 
     ros::Time now = ros::Time::now();
     double dt = (now - last_update_time_).toSec();
@@ -85,6 +88,24 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
             handleLostState(locked_target_bbox, dt);
             break;
     }
+}
+
+void TrackingStateMachine::setTakeoffComplete(bool complete) {
+    if (takeoff_complete_ == complete) {
+        return;
+    }
+
+    takeoff_complete_ = complete;
+    if (takeoff_complete_) {
+        last_update_time_ = ros::Time::now();
+        ROS_INFO("[%s_%s Tracker] Takeoff gate opened.",
+                 vehicle_type_.c_str(), vehicle_id_.c_str());
+        return;
+    }
+
+    ROS_WARN("[%s_%s Tracker] Takeoff gate closed; resetting tracking state.",
+             vehicle_type_.c_str(), vehicle_id_.c_str());
+    resetForClosedTakeoffGate();
 }
 
 void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targets) {
@@ -418,6 +439,26 @@ void TrackingStateMachine::pauseMission() {
     pause_cmd.data = "PAUSE";
     mission_control_pub_.publish(pause_cmd);
     ros::Duration(0.1).sleep();
+}
+
+void TrackingStateMachine::resetForClosedTakeoffGate() {
+    if (!currently_tracked_target_id_.empty()) {
+        releaseTarget(currently_tracked_target_id_);
+    }
+
+    currently_tracked_target_id_.clear();
+    kf_.reset();
+    current_state_ = State::IDLE;
+    idle_entry_time_ = ros::Time(0);
+    first_seen_time_ = ros::Time(0);
+    last_seen_time_ = ros::Time(0);
+    tracking_start_time_ = ros::Time(0);
+    dash_start_time_ = ros::Time(0);
+    last_update_time_ = ros::Time::now();
+    dash_initial_height_ = 0.0;
+    target_height_ = 0.0;
+    height_lowered_ = false;
+    lost_frame_counter_ = 0;
 }
 
 std::string TrackingStateMachine::stateToString(State state) {

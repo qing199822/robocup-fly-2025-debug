@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="tracking" type="tracking_node" name="tracking_node_under_test"
+        args="test_drone 0" output="screen">
+    <rosparam file="$(find tracking)/config/params.yaml" command="load"/>
+    <param name="state_machine/confirmation_duration" value="0.0"/>
+  </node>
+  <test test-name="tracking_takeoff_gate" pkg="tracking"
+        type="test_takeoff_gate.py" time-limit="15"/>
+</launch>

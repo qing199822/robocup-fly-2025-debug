@@ -67,6 +67,8 @@ public:
                 const geometry_msgs::Pose& current_pose,
                 const geometry_msgs::Twist& current_velocity_body);
 
+    void setTakeoffComplete(bool complete);
+
 private:
     // --- State Handler Methods ---
     void handleIdleState(const TargetMap& current_visible_targets);
@@ -90,6 +92,7 @@ private:
     bool requestTarget(const std::string& target_id);
     void releaseTarget(const std::string& target_id);
     void pauseMission();
+    void resetForClosedTakeoffGate();
     std::string stateToString(State state);
 
     // --- ROS and Core Components ---
@@ -118,6 +121,7 @@ private:
     ros::Time last_update_time_; // 3. 添加用于计算 dt 的时间戳
     double dash_initial_height_ = 0.0;
     bool height_lowered_ = false;
+    bool takeoff_complete_ = false;
     int lost_frame_counter_ = 0;
     
     // --- Configuration Parameters (loaded from server) ---

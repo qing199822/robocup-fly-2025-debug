@@ -59,6 +59,11 @@ target_link_libraries(tracking_node
   Eigen3::Eigen # <--- 修正点 2: 链接 Eigen 目标
 )
 
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest(test/takeoff_gate.test)
+endif()
+
 # ========================= 6. 安装规则 (可选但推荐) =========================
 install(TARGETS tracking_node
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

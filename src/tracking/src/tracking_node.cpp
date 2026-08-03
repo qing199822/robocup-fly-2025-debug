@@ -6,6 +6,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <darknet_ros_msgs/BoundingBoxes.h>
+#include <std_msgs/Bool.h>
 
 // All the custom module headers
 #include "tracking/state_machine.h"
@@ -90,6 +91,10 @@ private:
 
         velocity_sub_ = nh_.subscribe<geometry_msgs::TwistStamped>(
             ns + "/mavros/local_position/velocity_body", 1, &TrackingNode::velocityCallback, this);
+
+        takeoff_complete_sub_ = nh_.subscribe<std_msgs::Bool>(
+            "/swarm/takeoff_complete", 1,
+            &TrackingNode::takeoffCompleteCallback, this);
     }
 
     /**
@@ -130,6 +135,10 @@ private:
         current_velocity_body_ = msg->twist;
     }
 
+    void takeoffCompleteCallback(const std_msgs::Bool::ConstPtr& msg) {
+        state_machine_->setTakeoffComplete(msg->data);
+    }
+
     // --- ROS and Core Components ---
     ros::NodeHandle& nh_;
     std::string vehicle_type_;
@@ -143,6 +152,7 @@ private:
     ros::Subscriber darknet_sub_;
     ros::Subscriber pose_sub_;
     ros::Subscriber velocity_sub_;
+    ros::Subscriber takeoff_complete_sub_;
 
     // --- Shared Data & Synchronization ---
     std::mutex data_mutex_;
