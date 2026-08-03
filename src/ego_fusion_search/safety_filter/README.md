@@ -25,3 +25,22 @@
 ## 控制所有权
 
 takeoff、navigator 和 external 控制源只能发布各自的 MUX 输入。它们不得直接发布 `/xtdrone/typhoon_h480_N/cmd_vel_flu`。后续 EGO adapter 只会替换 navigator 输入发布者，不增加最终发布者。
+
+```text
+takeoff -----+
+navigator ---+-> pose_cmd_mux -> raw_cmd_vel -> safety_filter -> cmd_vel_flu
+external ----+
+```
+
+MUX 初始选择 takeoff。只有六机起飞全部完成后，`fly_takeoff` 才选择 navigator；任何超时、部分起飞失败或部分交权失败都保持或回滚到零速度 takeoff。
+
+全局锁存话题 `/swarm/takeoff_complete` 默认发布 `false`。只有六机全部到高且 navigator 交权全部成功后才发布 `true`；此时 `confident_takeoff_node` 保持空闲存活以保存锁存值，但不再发送飞行命令。tracking 在门控开放前不能锁目标或选择 external，门控重新关闭时只释放目标和清空状态，不主动切换 MUX。
+
+仿真运行时检查六个最终话题：
+
+```bash
+python3 scripts/check_final_control_publishers.py \
+  --count 6 --vehicle-type typhoon_h480
+```
+
+健康状态应输出 `PASS final control topics have one safety_filter publisher each`。完整运行态检查使用 `bash scripts/smoke_competition_clean.sh`，并且报告中必须包含 `PASS takeoff gate /swarm/takeoff_complete`。

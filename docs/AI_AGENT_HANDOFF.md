@@ -108,6 +108,7 @@ git remote -v
 | `src/mix_nav/simple_navigator` | 航点导航、速度连续性和转向控制 |
 | `src/look_up` | 目标查询服务和 `down_resume` 总任务 launch |
 | `src/tracking` | 目标跟踪状态机、滤波、平滑和控制命令 |
+| `src/ego_fusion_search/safety_filter` | 最终速度看门狗、限幅和发布者唯一性边界 |
 | `src/transform_tree` | 队伍需要的动态 TF 发布 |
 | `src/yolo` | 六路检测、深度与 CameraInfo 匹配、三维坐标解算 |
 | `waypoint` | 比赛任务 JSON、地图和路线辅助数据 |
@@ -141,16 +142,22 @@ Realsense RGB
   -> look_up / tracking
 ```
 
-控制命令必须经过 MUX：
+控制命令必须依次经过 MUX 和后置安全过滤：
 
 ```text
-/typhoon_h480_N/tracking_node
-  -> /typhoon_h480_N/mux_inputs/external/pose_cmd
-  -> /typhoon_h480_N/pose_cmd_mux
-  -> /xtdrone/typhoon_h480_N/cmd_vel_flu
+fly_takeoff -> takeoff input --------+
+simple_navigator -> navigator input -+-> pose_cmd_mux -> raw_cmd_vel
+tracking -> external input ----------+                     |
+                                                        safety_filter
+                                                             |
+                                          XTDrone cmd_vel_flu (唯一发布者)
 ```
 
-跟踪节点不能直接成为最终 XTDrone 速度话题的第二个发布者，否则会和任务导航命令竞争。
+起飞节点先选择 takeoff；六机全部成功并发送零速度、HOVER 后才选择 navigator。任何起飞未完成或部分交权失败都保持或回滚到零速度 takeoff。跟踪通过现有 MUX 服务在 external 与 navigator 之间切换。
+
+`/swarm/takeoff_complete` 是全机门控，类型为锁存的 `std_msgs/Bool`。`confident_takeoff_node` 启动时发布 `false`，只有六机全部到高且 navigator 交权全部成功后才发布 `true`。tracking 默认按 `false` 处理：不能锁目标、发布 `PAUSE` 或选择 external；运行中回退为 `false` 时只释放一次目标并清空状态，不主动切换 MUX。成功后起飞节点保持空闲存活只是为了保存 ROS 1 锁存值，不再发送任何飞行命令。
+
+未来的 EGO adapter 只能替换 `simple_navigator`，成为既有 navigator 输入的唯一发布者。它不得新增第四路 MUX 输入，也不得直接发布最终 XTDrone 速度话题。最终 `/xtdrone/typhoon_h480_N/cmd_vel_flu` 的队伍发布者必须始终且仅为 `/typhoon_h480_N/safety_filter`；可用 `python3 scripts/check_final_control_publishers.py` 检查。
 
 清理链路：
 
@@ -268,6 +275,7 @@ bash scripts/smoke_competition_clean.sh
 成功报告写入 `logs/competition-clean/`，最后一行必须是：
 
 ```text
+PASS takeoff gate /swarm/takeoff_complete
 PASS competition-clean six-vehicle smoke
 ```
 

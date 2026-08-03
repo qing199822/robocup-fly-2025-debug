@@ -10,6 +10,15 @@
 - PX4、XTDrone、Gazebo 及官方模型目录是只读输入，构建前后均检查哈希；不向这些目录写入。
 - 改动安装位姿后，队伍须检查不遮挡机体、不穿透机架、朝向满足任务需要；提交比赛前还须接受裁判审查。
 
+## 控制发布边界
+
+- `fly_takeoff`、`simple_navigator`、`tracking` 以及未来的 EGO adapter 都属于队伍上层 ROS 代码，只能发布各自被允许的 MUX 输入。
+- 每架无人机的 takeoff、navigator、external 三路输入先经过 `pose_cmd_mux`，再经过队伍的 `safety_filter`；只有 `safety_filter` 可以发布 `/xtdrone/typhoon_h480_N/cmd_vel_flu`。
+- `/swarm/takeoff_complete` 默认且失效时为 `false`；只有全机到达起飞高度且全部成功切换到 navigator 后才为 `true`。tracking 在 `false` 时不得申请目标、暂停任务或选择 external，门控关闭清理也不得自行切换 MUX。
+- `confident_takeoff_node` 成功后保持空闲存活只用于维持 ROS 1 锁存状态，不继续发布速度、OFFBOARD、ARM 或 HOVER 命令。
+- `safety_filter` 对指令和 odometry 新鲜度、有限数值、高度、速度及加速度执行失效归零或限幅。`scripts/check_final_control_publishers.py` 在运行时核对最终话题恰好有一个预期发布者。
+- 这些控制源、Launch、安全过滤器和验证脚本都是队伍文件，不加入 `official_manifest.json`。它们的修改不得要求改写 PX4、XTDrone、Gazebo、EGO 或官方模型目录；外部官方树继续作为只读输入接受构建前后哈希检查。
+
 ## 官方文件清单
 
 哈希来自 `src/competition_compliance/config/official_manifest.json`，算法为 SHA-256。
