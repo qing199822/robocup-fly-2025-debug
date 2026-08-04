@@ -17,11 +17,16 @@ MissionManager::MissionManager(const task_manager::MissionDefinition& mission)
     std::string pose_topic = "/" + vehicle_id_ + "/global_pose";
     std::string control_topic = "/" + vehicle_id_ + "/mission/control";
     std::string odom_topic = "/" + vehicle_id_ + "/global_odom";
+    std::string active_topic = "/" + vehicle_id_ + "/mission/active";
 
     goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(goal_topic, 1);
+    active_pub_ = nh_.advertise<std_msgs::Bool>(active_topic, 1, true);
     pose_sub_ = nh_.subscribe(pose_topic, 1, &MissionManager::pose_callback, this);
     control_sub_ = nh_.subscribe(control_topic, 1, &MissionManager::control_callback, this);
     odom_sub_ = nh_.subscribe(odom_topic, 1, &MissionManager::odom_callback, this);
+    private_nh.param("startup_countdown_seconds",
+                     startup_countdown_seconds_, 10.0);
+    publishMissionActive(false);
 
     ROS_INFO("[%s] 任務管理器線程已初始化。當前處於待命狀態。", vehicle_id_.c_str());
 }
@@ -124,6 +129,12 @@ const task_manager::Waypoint& MissionManager::activeWaypoint() const {
     return points.at(progress_.index());
 }
 
+void MissionManager::publishMissionActive(bool active) {
+    std_msgs::Bool message;
+    message.data = active;
+    active_pub_.publish(message);
+}
+
 void MissionManager::run_mission() {
     ros::Rate rate(10);
 
@@ -133,16 +144,26 @@ void MissionManager::run_mission() {
         rate.sleep();
     }
 
-    ROS_INFO("[%s] 系統就緒，10s後啟動任務。", vehicle_id_.c_str());
-    for (int i = 10; i > 0 && ros::ok(); --i) {
-        ROS_INFO_THROTTLE(1, "[%s] 倒計時: %d秒", vehicle_id_.c_str(), i);
-        ros::Duration(1.0).sleep();
+    ROS_INFO("[%s] 系統就緒，%.1fs後啟動任務。",
+             vehicle_id_.c_str(), startup_countdown_seconds_);
+    const ros::Time countdown_start = ros::Time::now();
+    while (ros::ok() &&
+           (ros::Time::now() - countdown_start).toSec() <
+               startup_countdown_seconds_) {
+        const double remaining =
+            startup_countdown_seconds_ -
+            (ros::Time::now() - countdown_start).toSec();
+        ROS_INFO_THROTTLE(1, "[%s] 倒計時: %.1f秒",
+                          vehicle_id_.c_str(), remaining);
+        ros::spinOnce();
+        rate.sleep();
     }
 
     if (!ros::ok()) return;
 
     ROS_INFO("[%s] 延遲結束，自動開始巡邏任務。", vehicle_id_.c_str());
     state_ = activeState();
+    publishMissionActive(true);
 
     while (ros::ok()) {
         ros::spinOnce();

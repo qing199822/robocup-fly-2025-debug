@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="task_manager" type="multi_mission_launcher"
+        name="mission_manager_under_test"
+        args="$(find task_manager)/test/mission_active.json test_drone_0"
+        output="screen">
+    <param name="startup_countdown_seconds" value="0.0"/>
+  </node>
+  <test test-name="mission_active" pkg="task_manager"
+        type="test_mission_active.py" time-limit="15"/>
+</launch>

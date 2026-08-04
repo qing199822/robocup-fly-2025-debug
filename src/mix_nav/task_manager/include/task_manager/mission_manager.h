@@ -6,6 +6,7 @@
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 #include <vector>
 #include <string>
@@ -43,12 +44,14 @@ private:
     bool check_stagnation();
     State activeState() const;
     const task_manager::Waypoint& activeWaypoint() const;
+    void publishMissionActive(bool active);
 
     // 節點句柄
     ros::NodeHandle nh_;
     
     // 發布者和訂閱者
     ros::Publisher goal_pub_;
+    ros::Publisher active_pub_;
     ros::Subscriber pose_sub_;
     ros::Subscriber control_sub_;
     ros::Subscriber odom_sub_;
@@ -72,6 +75,7 @@ private:
     double arrival_tolerance_ = 3.0;
     double resume_arrival_tolerance_ = 3.0;
     double record_interval_ = 3.0;
+    double startup_countdown_seconds_ = 10.0;
     size_t max_path_points_ = 100;
     // 停滯檢測相關變數
     ros::Time stagnation_check_start_time_;

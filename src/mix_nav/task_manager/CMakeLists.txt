@@ -70,6 +70,8 @@ target_link_libraries(mission_definition_lib
 )
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+
   catkin_add_gtest(mission_progress_test test/mission_progress_test.cpp)
   if(TARGET mission_progress_test)
     target_link_libraries(mission_progress_test
@@ -83,6 +85,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
 
   catkin_add_nosetests(test/test_mission_clearance.py)
+  add_rostest(test/mission_active.test)
 endif()
 
 # 注意：我们不再需要之前那个复杂的 install() 部分。
