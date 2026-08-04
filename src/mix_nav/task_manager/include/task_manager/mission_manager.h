@@ -16,18 +16,20 @@
 #include <json/json.h>
 #include <boost/optional.hpp>
 #include "task_manager/mission_definition.h"
+#include "task_manager/mission_progress.h"
 
 class MissionManager {
 public:
     // 狀態定義
     enum State {
-        STATE_PATROLLING = 0,
-        STATE_PAUSED = 1,
-        STATE_RESUMING = 2,
-        STATE_IDLE = 3
+        STATE_ENTERING = 0,
+        STATE_PATROLLING = 1,
+        STATE_PAUSED = 2,
+        STATE_RESUMING = 3,
+        STATE_IDLE = 4
     };
 
-    MissionManager(const std::string& vehicle_id, const std::vector<task_manager::Waypoint>& waypoints);
+    explicit MissionManager(const task_manager::MissionDefinition& mission);
     void run_mission();
 
 private:
@@ -39,6 +41,8 @@ private:
     // 輔助函數
     double get_distance(const geometry_msgs::Point& p1, const geometry_msgs::Point& p2);
     bool check_stagnation();
+    State activeState() const;
+    const task_manager::Waypoint& activeWaypoint() const;
 
     // 節點句柄
     ros::NodeHandle nh_;
@@ -51,7 +55,9 @@ private:
 
     // 成員變數
     std::string vehicle_id_;
-    std::vector<task_manager::Waypoint> waypoints_;
+    std::vector<task_manager::Waypoint> entry_waypoints_;
+    std::vector<task_manager::Waypoint> patrol_waypoints_;
+    task_manager::MissionProgress progress_;
     geometry_msgs::Pose current_pose_;
     bool has_pose_ = false;
 
@@ -67,10 +73,6 @@ private:
     double resume_arrival_tolerance_ = 3.0;
     double record_interval_ = 3.0;
     size_t max_path_points_ = 100;
-    bool loop_mission_ = true;
-    int current_waypoint_index_ = 0;
-    int mission_completed_count_ = 0;
-
     // 停滯檢測相關變數
     ros::Time stagnation_check_start_time_;
     geometry_msgs::Pose stagnation_previous_pose_;

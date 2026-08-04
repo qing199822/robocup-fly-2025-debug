@@ -42,8 +42,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::thread> threads;
     for (const auto& mission : missions) {
-        auto manager = std::make_shared<MissionManager>(
-            mission.vehicle_id, mission.patrol_waypoints);
+        auto manager = std::make_shared<MissionManager>(mission);
         threads.emplace_back(&MissionManager::run_mission, manager);
         ROS_INFO("[Launcher] 已為 %s 啟動任務線程。",
                  mission.vehicle_id.c_str());

@@ -3,8 +3,12 @@
 #include "task_manager/mission_manager.h"
 #include <string>
 
-MissionManager::MissionManager(const std::string& vehicle_id, const std::vector<task_manager::Waypoint>& waypoints)
-    : vehicle_id_(vehicle_id), waypoints_(waypoints), state_(STATE_IDLE) {
+MissionManager::MissionManager(const task_manager::MissionDefinition& mission)
+    : vehicle_id_(mission.vehicle_id),
+      entry_waypoints_(mission.entry_waypoints),
+      patrol_waypoints_(mission.patrol_waypoints),
+      progress_(entry_waypoints_.size(), patrol_waypoints_.size()),
+      state_(STATE_IDLE) {
     
     ros::NodeHandle private_nh("~");
 
@@ -54,9 +58,11 @@ void MissionManager::control_callback(const std_msgs::String::ConstPtr& msg) {
 
     ROS_INFO("[%s] [DEBUG] Control command '%s' received. Current state is %d.", vehicle_id_.c_str(), command.c_str(), state_);
 
-    if (command == "PAUSE" && state_ == STATE_PATROLLING) {
+    if (command == "PAUSE" &&
+        (state_ == STATE_ENTERING || state_ == STATE_PATROLLING)) {
         ROS_INFO("[%s] 收到暫停指令！記錄當前位置為中斷點。", vehicle_id_.c_str());
         interruption_pose_ = current_pose_;
+        progress_.pause();
         state_ = STATE_PAUSED;
 
         path_stack_.clear();
@@ -71,12 +77,8 @@ void MissionManager::control_callback(const std_msgs::String::ConstPtr& msg) {
             stagnation_pose_initialized_ = false;
         } else if (state_ == STATE_IDLE) {
             ROS_INFO("[%s] 收到首次啟動指令！開始執行巡邏任務。", vehicle_id_.c_str());
-            state_ = STATE_PATROLLING;
+            state_ = activeState();
         }
-    } else if (command == "TOGGLE_LOOP") {
-        loop_mission_ = !loop_mission_;
-        std::string status = loop_mission_ ? "開啟" : "關閉";
-        ROS_INFO("[%s] 循環執行模式已%s", vehicle_id_.c_str(), status.c_str());
     }
 }
 
@@ -108,6 +110,20 @@ bool MissionManager::check_stagnation() {
     return false;
 }
 
+MissionManager::State MissionManager::activeState() const {
+    return progress_.phase() == task_manager::MissionPhase::ENTERING
+               ? STATE_ENTERING
+               : STATE_PATROLLING;
+}
+
+const task_manager::Waypoint& MissionManager::activeWaypoint() const {
+    const auto& points =
+        progress_.phase() == task_manager::MissionPhase::ENTERING
+            ? entry_waypoints_
+            : patrol_waypoints_;
+    return points.at(progress_.index());
+}
+
 void MissionManager::run_mission() {
     ros::Rate rate(10);
 
@@ -126,7 +142,7 @@ void MissionManager::run_mission() {
     if (!ros::ok()) return;
 
     ROS_INFO("[%s] 延遲結束，自動開始巡邏任務。", vehicle_id_.c_str());
-    state_ = STATE_PATROLLING;
+    state_ = activeState();
 
     while (ros::ok()) {
         ros::spinOnce();
@@ -141,20 +157,9 @@ void MissionManager::run_mission() {
                 ROS_INFO_THROTTLE(10, "[%s] [待命中] 等待 'RESUME' 指令...", vehicle_id_.c_str());
                 break;
             }
+            case STATE_ENTERING:
             case STATE_PATROLLING: {
-                if (current_waypoint_index_ >= waypoints_.size()) {
-                    if (loop_mission_) {
-                        mission_completed_count_++;
-                        ROS_INFO("[%s] 完成第 %d 輪巡邏任務，重新開始...", vehicle_id_.c_str(), mission_completed_count_);
-                        current_waypoint_index_ = 0;
-                    } else {
-                        ROS_INFO_ONCE("[%s] 所有航點任務已完成！進入懸停狀態。", vehicle_id_.c_str());
-                        rate.sleep();
-                        continue;
-                    }
-                }
-
-                const auto& target_point = waypoints_[current_waypoint_index_];
+                const auto& target_point = activeWaypoint();
                 geometry_msgs::PoseStamped goal_msg;
                 goal_msg.header.stamp = ros::Time::now();
                 goal_msg.header.frame_id = "map";
@@ -166,11 +171,16 @@ void MissionManager::run_mission() {
                 goal_pub_.publish(goal_msg);
 
                 double distance = get_distance(current_pose_.position, goal_msg.pose.position);
-                ROS_INFO_THROTTLE(5, "[%s] [巡邏中] -> 航點 %d。距離: %.2fm", vehicle_id_.c_str(), current_waypoint_index_ + 1, distance);
+                const char* phase_name = state_ == STATE_ENTERING ? "進入中" : "巡邏中";
+                ROS_INFO_THROTTLE(5, "[%s] [%s] -> 航點 %zu。距離: %.2fm",
+                                  vehicle_id_.c_str(), phase_name,
+                                  progress_.index() + 1, distance);
 
                 if (distance < arrival_tolerance_) {
-                    ROS_INFO("[%s] 已到達航點 %d!", vehicle_id_.c_str(), current_waypoint_index_ + 1);
-                    current_waypoint_index_++;
+                    ROS_INFO("[%s] 已到達航點 %zu!", vehicle_id_.c_str(),
+                             progress_.index() + 1);
+                    progress_.advance();
+                    state_ = activeState();
                     ros::Duration(1.0).sleep();
                 }
                 break;
@@ -228,7 +238,8 @@ void MissionManager::run_mission() {
                         path_stack_.clear();
                         last_record_time_ = ros::Time(0);
                         stagnation_pose_initialized_ = false;
-                        state_ = STATE_PATROLLING;
+                        progress_.resume();
+                        state_ = activeState();
                     }
                 }
                 break;

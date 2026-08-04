@@ -35,6 +35,10 @@ add_library(mission_definition_lib
   src/mission_definition.cpp
 )
 
+add_library(mission_progress_lib
+  src/mission_progress.cpp
+)
+
 # 首先，编译 mission_manager.cpp 成为一个库
 add_library(mission_manager_lib
   src/mission_manager.cpp
@@ -56,6 +60,7 @@ target_link_libraries(multi_mission_launcher
 
 # 我们的 mission_manager_lib 库本身也需要链接一些库
 target_link_libraries(mission_manager_lib
+  mission_progress_lib
   ${catkin_LIBRARIES}
   ${JSONCPP_LIBRARIES}
 )
@@ -65,6 +70,12 @@ target_link_libraries(mission_definition_lib
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(mission_progress_test test/mission_progress_test.cpp)
+  if(TARGET mission_progress_test)
+    target_link_libraries(mission_progress_test
+      mission_progress_lib ${catkin_LIBRARIES})
+  endif()
+
   catkin_add_gtest(mission_definition_test test/mission_definition_test.cpp)
   if(TARGET mission_definition_test)
     target_link_libraries(mission_definition_test
