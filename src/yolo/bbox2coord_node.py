@@ -17,6 +17,7 @@ from geometry_msgs.msg import PointStamped
 from tf2_msgs.msg import TFMessage
 from darknet_ros_msgs.msg import BoundingBoxes
 from actor_msgs.msg import ActorInfo
+from look_up.msg import CoordinateBroadcastHeartbeat
 
 # 工具
 from cv_bridge import CvBridge
@@ -27,6 +28,7 @@ from camera_geometry import (
     roi_mean_depth,
     select_closest_depth_sample,
 )
+from coordinate_reporting import publish_actor_info_with_heartbeat
 
 class CoordinateEstimator:
     """
@@ -70,6 +72,11 @@ class CoordinateEstimator:
 
         # 6. 初始化ROS發布者
         self.actor_publishers = self._create_actor_publishers()
+        self.broadcast_heartbeat_pub = rospy.Publisher(
+            f"/{self.robot_name}/coordinate_broadcast/heartbeat",
+            CoordinateBroadcastHeartbeat,
+            queue_size=10,
+        )
         
         # 7. 初始化ROS訂閱者
         self._setup_subscriptions()
@@ -344,7 +351,16 @@ class CoordinateEstimator:
                 y=final_point.point.y
             )
             
-            publisher.publish(actor_message)
+            heartbeat = CoordinateBroadcastHeartbeat()
+            heartbeat.header.stamp = rospy.Time.now()
+            heartbeat.vehicle_name = self.robot_name
+            heartbeat.target_id = class_name
+            publish_actor_info_with_heartbeat(
+                publisher,
+                actor_message,
+                self.broadcast_heartbeat_pub,
+                heartbeat,
+            )
             rospy.loginfo(f"發布 {class_name} ({config['color']}) 位置到話題 '{publisher.name}': "
                           f"x={actor_message.x:.3f}, y={actor_message.y:.3f}")
         else:

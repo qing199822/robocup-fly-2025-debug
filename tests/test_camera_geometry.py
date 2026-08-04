@@ -414,6 +414,31 @@ class CameraInfoNodeSourceContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.source)
 
+    def test_actor_report_emits_structured_heartbeat_only_after_publish(self):
+        imported_names = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom):
+                imported_names.update(alias.name for alias in node.names)
+
+        self.assertIn("CoordinateBroadcastHeartbeat", imported_names)
+        self.assertIn("publish_actor_info_with_heartbeat", imported_names)
+
+        initializer = self.function_source("__init__")
+        self.assertIn("self.broadcast_heartbeat_pub = rospy.Publisher(", initializer)
+        self.assertIn("/coordinate_broadcast/heartbeat", initializer)
+
+        publish_method = self.function_source("_publish_actor_info")
+        self.assertIn("heartbeat = CoordinateBroadcastHeartbeat()", publish_method)
+        self.assertIn("heartbeat.header.stamp = rospy.Time.now()", publish_method)
+        self.assertIn("heartbeat.vehicle_name = self.robot_name", publish_method)
+        self.assertIn("heartbeat.target_id = class_name", publish_method)
+        self.assertIn("publish_actor_info_with_heartbeat(", publish_method)
+        self.assertNotIn("publisher.publish(actor_message)", publish_method)
+        self.assertLess(
+            publish_method.index("actor_message = ActorInfo("),
+            publish_method.index("publish_actor_info_with_heartbeat("),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
