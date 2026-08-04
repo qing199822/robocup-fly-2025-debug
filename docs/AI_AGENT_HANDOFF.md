@@ -111,7 +111,7 @@ git remote -v
 | `src/ego_fusion_search/safety_filter` | 最终速度看门狗、限幅和发布者唯一性边界 |
 | `src/transform_tree` | 队伍需要的动态 TF 发布 |
 | `src/yolo` | 六路检测、深度与 CameraInfo 匹配、三维坐标解算 |
-| `waypoint` | 比赛任务 JSON、地图和路线辅助数据 |
+| `waypoint` | 可见任务入口、地图和路线辅助数据；`mission_down.json` 是指向包内权威文件的链接 |
 | `tests` | 启动器、边界、图形环境、验证脚本、相机几何和生命周期回归 |
 
 修改某个包前，先阅读该包的 `README.md`、`package.xml`、`CMakeLists.txt` 和测试。不要仅根据文件名推测接口。
@@ -156,6 +156,10 @@ tracking -> external input ----------+                     |
 起飞节点先选择 takeoff；六机全部成功并发送零速度、HOVER 后才选择 navigator。任何起飞未完成或部分交权失败都保持或回滚到零速度 takeoff。跟踪通过现有 MUX 服务在 external 与 navigator 之间切换。
 
 `/swarm/takeoff_complete` 是全机门控，类型为锁存的 `std_msgs/Bool`。`confident_takeoff_node` 启动时发布 `false`，只有六机全部到高且 navigator 交权全部成功后才发布 `true`。tracking 默认按 `false` 处理：不能锁目标、发布 `PAUSE` 或选择 external；运行中回退为 `false` 时只释放一次目标并清空状态，不主动切换 MUX。成功后起飞节点保持空闲存活只是为了保存 ROS 1 锁存值，不再发送任何飞行命令。
+
+固定巡逻的高度合同是起飞 3.0 米、任务航点 3.5 米、`safety_filter` 默认上限 4.0 米。任务管理器先完整校验六机 JSON，再创建线程；每机的 `entry_waypoints` 只执行一次，`waypoints` 在最后一点到第一点之间隐式闭环。跟踪暂停会保存当前处于进入还是巡逻阶段，返航后从原阶段和原索引继续。
+
+`src/mix_nav/task_manager/launch/mission_down.json` 是运行时唯一权威文件。根目录 `waypoint/mission_down.json` 只是指向它的相对符号链接。当前六机分别负责西南、南中、东南、西北、北中、东北区域；自动化几何契约保证固定任务在起飞区外的跨机中心线净空不小于 5 米。该保证不覆盖跟踪和未来 EGO 动态改路，它们仍需动态避碰。
 
 未来的 EGO adapter 只能替换 `simple_navigator`，成为既有 navigator 输入的唯一发布者。它不得新增第四路 MUX 输入，也不得直接发布最终 XTDrone 速度话题。最终 `/xtdrone/typhoon_h480_N/cmd_vel_flu` 的队伍发布者必须始终且仅为 `/typhoon_h480_N/safety_filter`；可用 `python3 scripts/check_final_control_publishers.py` 检查。
 
@@ -254,14 +258,14 @@ bash 1.sh 6 mission_down.json
 
 启动器会依次等待六机连接、通信节点、相机和队伍辅助节点。不要在等待过程中另开一套相同仿真。
 
-可选任务文件位于 `waypoint/`，但 `1.sh` 的参数只传文件名。例如：
+可见任务入口位于 `waypoint/`，但 `1.sh` 的参数只传文件名。例如：
 
 ```bash
 bash 1.sh 6 mission_middle.json
 bash 1.sh 6 mission_up.json
 ```
 
-修改任务前先确认比赛规则和航点测试仍适用。
+`mission_down.json` 的真实内容维护在 `src/mix_nav/task_manager/launch/mission_down.json`，不要把符号链接改回第二份 JSON。修改任务前先确认比赛规则和航点测试仍适用。
 
 ### 运行态六机检查
 
@@ -441,7 +445,7 @@ PX4 接受 OFFBOARD 前必须持续收到 setpoint。正确顺序是六机连接
 
 ### 无人机超高或撞障碍
 
-任务高度必须低于 6 米。路线变化先运行航点净空测试，再进行真实 Gazebo 全航程回归。已知加油站不能在限高内从上方跨越，`mission_down.json` 采用先沿 `y=0` 绕过再向南转的路线。
+固定任务应保持 3.5 米，最终安全过滤上限为 4.0 米。路线变化先运行航点净空测试，再进行真实 Gazebo 全航程回归。测试覆盖完整进入段、巡逻闭环、已登记静态障碍和起飞区外 5 米跨机中心线净空；跟踪和未来 EGO 动态路线仍需单独验证动态避碰。
 
 ### Ctrl-C 后仍有进程
 
