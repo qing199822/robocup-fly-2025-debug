@@ -508,8 +508,7 @@ python3 src/mix_nav/task_manager/test/test_mission_clearance.py -v
 source /opt/ros/noetic/setup.bash
 catkin_make --pkg task_manager tracking safety_filter
 catkin_make run_tests_task_manager run_tests_tracking run_tests_safety_filter
-catkin_test_results build/test_results/task_manager \
-  build/test_results/tracking build/test_results/safety_filter
+catkin_test_results build/test_results
 ```
 
 Expected: 几何测试全过；三个包汇总 0 error、0 failure。
