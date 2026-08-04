@@ -587,3 +587,62 @@ git ls-remote --heads public competition-clean
 - 日志记录六个 tracking 节点均收到起飞门控打开；无人机 0、2、5 随后锁定人物并成功把各自 MUX 切换到 external 输入，证明门控后跟踪接管链可运行。
 - smoke 报告：`logs/competition-clean/smoke-20260803-221012.8bXHsd.log`，最后一行为 `PASS competition-clean six-vehicle smoke`；其中起飞门控、最终发布者唯一性和传感器 TF 均通过。
 - 使用 Ctrl-C 正常停止，外层退出码 130；项目相关 Gazebo、PX4、roslaunch、XTDrone 通信和起飞节点无残留，competition-clean 临时目录无残留。
+
+## 2026-08-04 固定巡逻碰撞修复与真实复验
+
+### 目标
+
+修复首次固定巡逻验收中已经闭合的两个根因：4 号机路线穿越 `house_1_146_clone`，以及 tracking 在任务管理器仍为 `IDLE` 时提前发送 `PAUSE`。本轮没有根据坠落后的异常坐标猜测修改 PX4、XTDrone、Gazebo、EGO-Planner-Swarm 或官方无人机模型。
+
+### 首次失败证据
+
+- 主日志：`logs/competition-clean/launch-20260804-172326-kQZ6IP.log`。
+- smoke：`logs/competition-clean/smoke-20260804-172926.AUMa07.log`。smoke 通过，但完整飞行验收失败，证明 smoke 不能代替全航程验证。
+- 首次 bag：`/tmp/static-patrol-validation.bag`，约 8 MB；首次接触流：`/tmp/static-patrol-contacts.log`，约 3.0 GB。两份文件仍保留。
+- 0、4 号机异常最高高度分别为 490.143 米和 489.329 米；5 号机最高仅约 2.277 米。
+- 任务阶段最小机距为 2.384 米，发生在 4、5 号机之间。
+- Gazebo 接触流确认 4 号机旧路线持续接触 `house_1_146_clone`。官方 world 和碰撞网格计算出的房屋世界边界原先未登记到几何测试中。
+- 日志确认 5 号机在起飞门控打开后发送 `PAUSE`，但任务管理器当时仍为 `STATE_IDLE`，该命令被忽略。
+- 0 号机首次事故发生在旧接触采集开始前，根因没有闭合，本轮不猜修。
+
+### 修改与自动化验证
+
+- `test_mission_clearance.py` 登记 `house_1_146` 和 `house_1_146_clone` 的碰撞边界；旧 4 号机路线先稳定出现三个 `intersects house_1_146_clone` 失败，再改为南侧进入 `(0,7) -> (25,7)` 和北中巡逻矩形 `(25,12) -> (68,12) -> (68,41) -> (25,41)`。
+- `MissionManager` 新增锁存话题 `/typhoon_h480_N/mission/active`：初始化为 `false`，完成位姿等待和默认 10 秒倒计时、进入任务阶段后为 `true`；`PAUSED` 和 `RESUMING` 保持已激活。
+- tracking 必须同时收到 `/swarm/takeoff_complete=true` 和本机 `/mission/active=true` 才能请求目标、发送 `PAUSE` 或切换 external；任一门控关闭时释放目标并复位。
+- 新增 task_manager rostest，先确认当前实现因缺少初始 `false` 失败，再验证锁存状态先假后真。tracking rostest 先确认仅起飞门控为真时错误请求 `green0`，再覆盖两个门控的四种组合和两种关闭复位。
+- 聚焦几何测试 9 项通过；task_manager、tracking、safety_filter 聚焦构建通过，工作区 Catkin 汇总 178 项、0 errors、0 failures。
+- fresh 完整 verifier 在本机环境通过：仓库 Python 134 项通过，Catkin 178 项、0 errors、0 failures，静态和构建后合规证据均生成。工具隔离内不能枚举网络接口，因此 ROS 测试使用本机权限执行。
+- PX4、XTDrone、Gazebo、EGO 和官方模型均未修改；完整验证和真实运行结束后 `git -C "$XTDRONE_DIR" status --short` 为空。
+
+### 2026-08-04 真实六机复验结果
+
+本次结果为失败，不能作为比赛可用基线。
+
+- 主日志：`logs/competition-clean/launch-20260804-181217-A05PZ5.log`。
+- smoke：`logs/competition-clean/smoke-20260804-181340.rZy76C.log`，最后一行为 `PASS competition-clean six-vehicle smoke`。
+- 恢复索引后的 bag：`/tmp/static-patrol-revalidation.bag.active`，持续 406 秒、195030 条消息、约 66 MB。原始副本保留为 `.active.raw` 和 `.orig.active`，不要擅自删除。
+- 接触流：`/tmp/static-patrol-revalidation-contacts.log`，约 5.1 GB。采集在两个门控打开前开始。
+- 起飞门控事件为 `1785.544 false`、`1793.816 true`。六个任务激活话题先在约 1785.5 发布 `false`，再于 `1795.524–1795.700` 发布 `true`。
+- 5 号机首次 `PAUSE` 在 1814.168，晚于本机 mission active 1795.608；本轮没有再出现“在 `IDLE` 时被 tracking 抢占”的启动竞态。
+- 4 号机完成两个进入点并到达巡逻点 1、2，运行位置经过约 `(66.6,13.3,3.3)`；接触流中没有 `house_1_146_clone`，说明确定的绕房路线解决了原碰撞。
+- 任务进度并未全机闭环：0 号机没有航点到达事件；1 号机完成两个进入点和巡逻点 1–4；2 号机仅完成前两个进入点；3 号机完成进入并运行多轮；4 号机完成进入和巡逻点 1、2；5 号机完成六个进入点和巡逻点 1、2。
+- 全程和任务阶段最小三维机距均为 0.671 米，发生在 4、5 号机，时刻 1798.064。接触流确认 1797.740–1798.240 期间两机的 `base_link`、保险杠和旋翼发生直接接触；事故位置约为 4 号机 `(-13.581,2.408,3.593)`、5 号机 `(-12.688,2.020,3.600)`。
+- 5 号机从 1952.288 起接触 `house_3_68`，当时位置约 `(101.197,13.755,3.504)`；随后接触地面，任务阶段最低 -165.266 米、最高 488.934 米，首次超过 10 米在 1982.328。
+- 2 号机从 2009.640 起接触 `house_3_156`，当时位置约 `(-36.058,-20.513,2.963)`；随后持续接触地面，任务阶段最低 -9.018 米。
+- 0、1、3、4 号机任务阶段最高高度分别为 3.425、3.599、3.627、3.597 米；2 号机最高 3.600 米。0 号机本轮没有出现约 490 米的坐标发散，但长期没有完成航点。
+- 2、5 号机安全状态历史包含 `ALTITUDE_LIMIT`，停止前读取均为 `OK`，MUX 均选择 navigator；这不代表事故期间安全边界有效。
+- 主启动器按一次 Ctrl-C 后退出码 130；rosbag 和接触采集退出码均为 0。本次 Gazebo、PX4、roslaunch、XTDrone 通信、YOLO 和采集进程无残留，competition-clean 临时目录无残留，XTDrone 工作树为空。
+
+### Git
+
+- 分支：`competition-clean`。
+- 本轮主要提交：`90dd5cd fix: route north-central patrol around houses`、`d312006 feat: publish active mission state`、`d94a775 fix: gate tracking on active missions`。
+- 计划和执行命令修正另有文档提交。未经用户再次明确要求，本轮未推送公开仓库。
+
+### 剩余风险与下一步
+
+- 4、5 号机在起飞区内只相距约 3 米，现有几何测试会裁掉起飞区内部线段，因此没有发现两机进入初段的动态碰撞。下一轮应先单独设计起飞区解耦或进入时序，而不是缩小 5 米净空合同。
+- 5 号机撞 `house_3_68`、2 号机撞 `house_3_156` 的完整控制链原因尚未闭合。结合暂停/恢复日志，必须区分静态任务段、tracking 外部控制和断点返航段，再决定是补障碍、修返航还是调整跟踪退出；不要直接改官方 world 或飞控。
+- 0 号机本轮未坠毁但始终没有航点到达，需从 bag 中结合目标锁定、MUX 和任务状态单独分析。现有 bag 没有记录 MUX selected 和 mission control 话题，下一轮证据采集应补上这两类话题。
+- 当前真实复验失败，禁止把 `competition-clean` 描述为全航程安全或比赛就绪。
