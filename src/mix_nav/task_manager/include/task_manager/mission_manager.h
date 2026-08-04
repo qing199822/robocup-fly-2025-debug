@@ -15,11 +15,7 @@
 #include <chrono>
 #include <json/json.h>
 #include <boost/optional.hpp>
-
-// 定義航點結構
-struct Waypoint {
-    double x, y, z;
-};
+#include "task_manager/mission_definition.h"
 
 class MissionManager {
 public:
@@ -31,7 +27,7 @@ public:
         STATE_IDLE = 3
     };
 
-    MissionManager(const std::string& vehicle_id, const std::vector<Waypoint>& waypoints);
+    MissionManager(const std::string& vehicle_id, const std::vector<task_manager::Waypoint>& waypoints);
     void run_mission();
 
 private:
@@ -55,7 +51,7 @@ private:
 
     // 成員變數
     std::string vehicle_id_;
-    std::vector<Waypoint> waypoints_;
+    std::vector<task_manager::Waypoint> waypoints_;
     geometry_msgs::Pose current_pose_;
     bool has_pose_ = false;
 

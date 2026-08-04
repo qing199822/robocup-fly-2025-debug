@@ -5,9 +5,8 @@
 #include <vector>
 #include <string>
 #include <fstream>
-#include <streambuf>
 #include "task_manager/mission_manager.h"
-#include <json/json.h>
+#include "task_manager/mission_definition.h"
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -26,47 +25,28 @@ int main(int argc, char** argv) {
         target_vehicle_ids.push_back(argv[i]);
     }
 
-    // 讀取並解析 JSON 文件
     std::ifstream mission_file(mission_file_path);
     if (!mission_file.is_open()) {
         ROS_FATAL_STREAM("[Launcher] 無法打開任務文件: " << mission_file_path);
         return 1;
     }
 
-    Json::Value all_missions;
-    Json::Reader reader;
-    if (!reader.parse(mission_file, all_missions)) {
-        ROS_FATAL_STREAM("[Launcher] 解析JSON文件失敗: " << reader.getFormattedErrorMessages());
+    std::vector<task_manager::MissionDefinition> missions;
+    try {
+        missions = task_manager::loadMissionDefinitions(
+            mission_file, target_vehicle_ids);
+    } catch (const std::exception& error) {
+        ROS_FATAL("[Launcher] mission validation failed: %s", error.what());
         return 1;
     }
 
     std::vector<std::thread> threads;
-
-    for (const auto& vehicle_id : target_vehicle_ids) {
-        ROS_INFO("[Launcher] 正在為 %s 準備任務...", vehicle_id.c_str());
-
-        bool mission_found = false;
-        for (const auto& mission_data : all_missions) {
-            if (mission_data["vehicle_id"].asString() == vehicle_id) {
-                mission_found = true;
-                std::vector<Waypoint> waypoints;
-                const Json::Value& wp_json = mission_data["waypoints"];
-                for (const auto& point : wp_json) {
-                    waypoints.push_back({point["x"].asDouble(), point["y"].asDouble(), point["z"].asDouble()});
-                }
-                
-                // 創建 MissionManager 實例並啟動線程
-                auto manager = std::make_shared<MissionManager>(vehicle_id, waypoints);
-                threads.emplace_back(&MissionManager::run_mission, manager);
-
-                ROS_INFO("[Launcher] 已為 %s 啟動任務線程。", vehicle_id.c_str());
-                break;
-            }
-        }
-
-        if (!mission_found) {
-            ROS_WARN("[Launcher] 在文件 %s 中未找到無人機ID '%s' 的任務，已跳過。", mission_file_path.c_str(), vehicle_id.c_str());
-        }
+    for (const auto& mission : missions) {
+        auto manager = std::make_shared<MissionManager>(
+            mission.vehicle_id, mission.patrol_waypoints);
+        threads.emplace_back(&MissionManager::run_mission, manager);
+        ROS_INFO("[Launcher] 已為 %s 啟動任務線程。",
+                 mission.vehicle_id.c_str());
     }
 
     for (auto& th : threads) {

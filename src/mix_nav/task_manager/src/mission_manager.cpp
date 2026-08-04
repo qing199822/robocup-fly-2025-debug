@@ -3,7 +3,7 @@
 #include "task_manager/mission_manager.h"
 #include <string>
 
-MissionManager::MissionManager(const std::string& vehicle_id, const std::vector<Waypoint>& waypoints)
+MissionManager::MissionManager(const std::string& vehicle_id, const std::vector<task_manager::Waypoint>& waypoints)
     : vehicle_id_(vehicle_id), waypoints_(waypoints), state_(STATE_IDLE) {
     
     ros::NodeHandle private_nh("~");

@@ -31,6 +31,10 @@ include_directories(
 )
 
 # --- 5. 声明编译目标 ---
+add_library(mission_definition_lib
+  src/mission_definition.cpp
+)
+
 # 首先，编译 mission_manager.cpp 成为一个库
 add_library(mission_manager_lib
   src/mission_manager.cpp
@@ -45,6 +49,7 @@ add_executable(multi_mission_launcher
 # 为可执行文件链接它所需要的所有库
 target_link_libraries(multi_mission_launcher
   mission_manager_lib      # 链接我们自己编译的库
+  mission_definition_lib
   ${catkin_LIBRARIES}      # 链接catkin提供的所有库
   ${JSONCPP_LIBRARIES}     # 链接jsoncpp库
 )
@@ -55,7 +60,17 @@ target_link_libraries(mission_manager_lib
   ${JSONCPP_LIBRARIES}
 )
 
+target_link_libraries(mission_definition_lib
+  ${JSONCPP_LIBRARIES}
+)
+
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(mission_definition_test test/mission_definition_test.cpp)
+  if(TARGET mission_definition_test)
+    target_link_libraries(mission_definition_test
+      mission_definition_lib ${catkin_LIBRARIES} ${JSONCPP_LIBRARIES})
+  endif()
+
   catkin_add_nosetests(test/test_mission_clearance.py)
 endif()
 
