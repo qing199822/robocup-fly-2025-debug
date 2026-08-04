@@ -510,7 +510,7 @@ git ls-remote --heads public competition-clean
 - 启动器清理失败使用保留状态 `125`，受监督命令自然返回同一状态时日志可能表现为监督清理失败，但最终仍是非零失败。
 - 六机仿真资源消耗高。不能用减少实例、跳过相机或缩短就绪检查来让验收看起来更快。
 - `smoke` 证明消息和节点存在，不证明完整比赛路线安全；任务修改仍需全航程观察、限高和碰撞验证。
-- 坐标广播完成与恢复巡逻已有自动化 ROS 测试，但在新的真实六机运行证据写入本文档前，不能把自动化结果描述为现场通过。
+- 坐标广播完成与恢复巡逻已在真实六机运行中走通，但同次运行发生撞房和异常高度；该功能现场通过不等于完整任务安全或比赛就绪。
 
 ## 新 Agent 首次接手清单
 
@@ -667,8 +667,19 @@ git ls-remote --heads public competition-clean
 - Task 4 聚焦结果：tracking 汇总 14 项，0 errors、0 failures；其中完成流程验证 `mux_fail -> mux_success -> complete(green0) -> RESUME`，未确认的 `blue1` 在 20 秒等比例加速上限后只 release，并遵守本机冷却。
 - fresh 完整 verifier 在本机权限下通过：仓库 Python 137 项、Catkin 192 项，均为 0 errors、0 failures；Release 构建、actor collision 外置构建、静态与构建后官方文件检查均通过。隔离环境不能枚举网络接口，因此 ROS 测试按既定方式在本机权限下执行。
 - verifier 后 `git -C "$XTDRONE_DIR" status --short` 为空。PX4、XTDrone、Gazebo、EGO-Planner-Swarm、第三方 actor 插件源码和官方模型均未被本轮修改。
-- 本轮真实六机结果仍必须在执行后补充；未记录前视为未验证。
+
+### 真实六机证据
+
+- 主日志：`logs/competition-clean/launch-20260804-192440-LNaSc5.log`。
+- smoke：`logs/competition-clean/smoke-20260804-192600.v6wx5b.log`，最后一行为 `PASS competition-clean six-vehicle smoke`。
+- 1 号机在仿真时刻 1922.156 将 MUX 切至 external 并进入 `TRACKING`，在 1923.592 记录 `brown2` 的首个有效坐标广播，在 1938.656 确认连续广播满 15 秒。此前 1873.892 的同目标首个心跳属于已释放的另一会话，没有跨会话错误累计。
+- 在 1942.156，1 号机依次记录 `Returning control for target 'brown2'`、navigator MUX 切换成功、`Completed target 'brown2'`、单次 `RESUME` 和 `RETURNING -> IDLE`。这证明“确认完成并恢复任务”的现场主路径已走通。
+- `brown2` 完成后再次申请均被拒绝，说明 `COMPLETED` 状态没有重新开放。日志仍沿用通用文案 `already locked by another drone`，该文案不能用来区分“已完成”和“正被锁定”。
+- 补充 bag：`/tmp/tracking-report-validation.bag`，持续 76.936 秒、36988 条消息、约 13 MB。窗口内 0–5 号机最高高度依次为 3.557、3.583、3.575、3.591、484.632、488.832 米；4、5 号机仍存在严重异常高度。
+- 该补充窗口内最小三维机距为 18.860 米，发生在 1、3 号机。采集在事故后才开始，不能用该数值证明完整全航程机间安全。
+- 接触流：`/tmp/tracking-report-validation-contacts.log`，约 895 MB。其内容明确记录 5 号机的 `base_link`、保险杠等部件接触 `house_3_68`，随后旋翼等部件接触 `ground_plane`。
+- 主启动器按一次 Ctrl-C 后退出码 130；bag 和接触采集均以 0 退出。停止后没有本次 PX4、Gazebo、roslaunch、XTDrone 通信、YOLO 或 tracking 残留，没有新增 competition-clean 临时目录，XTDrone 工作树为空。
 
 ### 当前安全结论
 
-本功能的自动化流程通过不改变上一节真实六机结论：当前全航程仍存在 4/5 号机动态碰撞、2/5 号机撞房以及 0 号机无航点进度问题，禁止称为比赛就绪。
+人物连续广播 15 秒、完成目标并恢复巡逻的功能已有自动化和真实六机证据，但本次整体运行仍为失败：4、5 号机出现约 485–489 米异常高度，5 号机撞 `house_3_68` 并接触地面；上一轮确认的 4/5 号机动态碰撞、2 号机撞 `house_3_156` 和 0 号机无航点进度也尚未全部闭合。禁止把 `competition-clean` 描述为全航程安全或比赛就绪。
