@@ -2,6 +2,7 @@
 #define TARGET_LOOKUP_SERVICE_H
 
 #include <ros/ros.h>
+#include <look_up/CompleteTarget.h>
 #include <look_up/RequestTarget.h>
 #include <look_up/ReleaseTarget.h>
 #include <vector>
@@ -12,6 +13,7 @@
 // 定义目标状态的常量
 const std::string STATE_AVAILABLE = "AVAILABLE";
 const std::string STATE_TRACKED = "TRACKED";
+const std::string STATE_COMPLETED = "COMPLETED";
 
 // 目标ID列表
 const std::vector<std::string> TARGET_IDS = {"green0", "blue1", "brown2", "white3", "red4", "red5", "person"};
@@ -24,6 +26,7 @@ private:
    std::mutex mutex_;
    std::vector<ros::ServiceServer> request_services_;
    std::vector<ros::ServiceServer> release_services_;
+   ros::ServiceServer complete_service_;
 
    /**
     * 处理"请求追踪目标"的服务回调函数
@@ -44,6 +47,11 @@ private:
    // *** 关键修改 2: 删除多余的第三个参数 ***
    bool handleReleaseTarget(look_up::ReleaseTarget::Request& req,
                           look_up::ReleaseTarget::Response& res);
+
+   bool handleCompleteTarget(look_up::CompleteTarget::Request& req,
+                             look_up::CompleteTarget::Response& res);
+
+   bool isKnownTarget(const std::string& target_id) const;
 
 public:
    /**

@@ -37,6 +37,12 @@ TargetLookupService::TargetLookupService()
         ROS_INFO_STREAM("服务已就绪: '" << rel_service_name << "'");
     }
 
+    complete_service_ = nh_.advertiseService(
+        "/lookup/complete_target",
+        &TargetLookupService::handleCompleteTarget,
+        this);
+    ROS_INFO("服务已就绪: '/lookup/complete_target'");
+
     ROS_INFO("=========================================");
     ROS_INFO("目标锁定服务中心已成功初始化。");
     
@@ -60,15 +66,7 @@ bool TargetLookupService::handleRequestTarget(look_up::RequestTarget::Request& r
     ROS_DEBUG_STREAM("处理请求目标: " << target_id);
 
     // 检查目标ID是否有效
-    bool target_exists = false;
-    for (const auto& valid_id : TARGET_IDS) {
-        if (target_id == valid_id) {
-            target_exists = true;
-            break;
-        }
-    }
-
-    if (!target_exists) {
+    if (!isKnownTarget(target_id)) {
         ROS_ERROR_STREAM("收到未知目标的请求: '" << target_id << "'。");
         res.success = false;
         return true;
@@ -125,15 +123,7 @@ bool TargetLookupService::handleReleaseTarget(look_up::ReleaseTarget::Request& r
     ROS_DEBUG_STREAM("处理释放目标: " << target_id);
 
     // 检查目标ID是否有效
-    bool target_exists = false;
-    for (const auto& valid_id : TARGET_IDS) {
-        if (target_id == valid_id) {
-            target_exists = true;
-            break;
-        }
-    }
-
-    if (!target_exists) {
+    if (!isKnownTarget(target_id)) {
         ROS_ERROR_STREAM("收到未知目标的释放请求: '" << target_id << "'。");
         res.success = false;
         return true;
@@ -165,6 +155,11 @@ bool TargetLookupService::handleReleaseTarget(look_up::ReleaseTarget::Request& r
             ROS_INFO_STREAM("--- 当前可用目标: " << available_list);
         }
     }
+    else if (target_status_[target_id] == STATE_COMPLETED)
+    {
+        ROS_INFO_STREAM("目标 '" << target_id
+                        << "' 已完成，普通释放不会改变其状态。");
+    }
     else
     {
         ROS_DEBUG_STREAM("目标 '" << target_id << "' 原本就是可用状态，无需释放。");
@@ -173,6 +168,41 @@ bool TargetLookupService::handleReleaseTarget(look_up::ReleaseTarget::Request& r
     // 无论目标之前的状态是什么，都返回成功
     res.success = true;
     return true;
+}
+
+bool TargetLookupService::handleCompleteTarget(
+    look_up::CompleteTarget::Request& req,
+    look_up::CompleteTarget::Response& res)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!isKnownTarget(req.target_id)) {
+        ROS_ERROR_STREAM("收到未知目标的完成请求: '" << req.target_id << "'。");
+        res.success = false;
+        return true;
+    }
+
+    std::string& status = target_status_[req.target_id];
+    if (status == STATE_COMPLETED) {
+        res.success = true;
+        return true;
+    }
+    if (status != STATE_TRACKED) {
+        ROS_WARN_STREAM("目标 '" << req.target_id << "' 未被锁定，拒绝完成。");
+        res.success = false;
+        return true;
+    }
+
+    status = STATE_COMPLETED;
+    ROS_INFO_STREAM("目标 '" << req.target_id << "' 已标记为 COMPLETED。");
+    res.success = true;
+    return true;
+}
+
+bool TargetLookupService::isKnownTarget(const std::string& target_id) const
+{
+    return std::find(TARGET_IDS.begin(), TARGET_IDS.end(), target_id) !=
+           TARGET_IDS.end();
 }
 
 int main(int argc, char** argv)

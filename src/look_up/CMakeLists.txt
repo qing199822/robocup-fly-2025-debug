@@ -13,10 +13,16 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
+add_message_files(
+  FILES
+  CoordinateBroadcastHeartbeat.msg
+)
+
 add_service_files(
   FILES
   RequestTarget.srv
   ReleaseTarget.srv
+  CompleteTarget.srv
 )
 
 generate_messages(
@@ -65,3 +71,8 @@ install(TARGETS target_lookup_service
 install(DIRECTORY include/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest(test/target_lookup_service.test)
+endif()

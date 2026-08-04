@@ -1,0 +1,10 @@
+<launch>
+  <node pkg="look_up" type="target_lookup_service"
+        name="target_lookup_service_under_test"
+        output="screen" respawn="false"/>
+
+  <test test-name="target_lookup_service"
+        pkg="look_up"
+        type="test_target_lookup_service.py"
+        time-limit="20"/>
+</launch>
