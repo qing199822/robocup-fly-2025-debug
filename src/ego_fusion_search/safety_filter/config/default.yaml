@@ -7,4 +7,4 @@ max_yaw_rate: 1.0
 max_xy_acceleration: 2.0
 max_z_acceleration: 1.0
 min_altitude: 0.5
-max_altitude: 5.5
+max_altitude: 4.0

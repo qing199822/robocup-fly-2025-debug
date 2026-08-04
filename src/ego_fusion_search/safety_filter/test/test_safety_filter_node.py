@@ -33,23 +33,43 @@ class SafetyFilterNodeTest(unittest.TestCase):
             rate.sleep()
         self.fail("timed out waiting for safety_filter state")
 
-    def _publish_until(self, predicate, publish_raw, publish_odom, timeout=2.0):
+    def _publish_until(
+        self,
+        predicate,
+        publish_raw,
+        publish_odom,
+        timeout=2.0,
+        altitude=3.0,
+        vertical_speed=0.0,
+    ):
         deadline = rospy.Time.now() + rospy.Duration(timeout)
         rate = rospy.Rate(50)
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
             if publish_raw:
                 command = Twist()
                 command.linear.x = 1.0
+                command.linear.z = vertical_speed
                 self.raw_pub.publish(command)
             if publish_odom:
                 odom = Odometry()
                 odom.header.stamp = rospy.Time.now()
-                odom.pose.pose.position.z = 3.0
+                odom.pose.pose.position.z = altitude
                 self.odom_pub.publish(odom)
             if predicate():
                 return
             rate.sleep()
         self.fail("timed out while publishing safety_filter inputs")
+
+    def test_default_four_metre_ceiling_blocks_climb(self):
+        self._publish_until(
+            lambda: self.status == "ALTITUDE_LIMIT"
+            and self.command is not None
+            and self.command.linear.z == 0.0,
+            publish_raw=True,
+            publish_odom=True,
+            altitude=4.0,
+            vertical_speed=0.5,
+        )
 
     def test_watchdogs_are_fail_closed_and_recover(self):
         self._wait_for(

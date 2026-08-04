@@ -9,6 +9,10 @@ using safety_filter::Fault;
 using safety_filter::Limits;
 using safety_filter::SafetyPolicy;
 
+TEST(SafetyPolicy, DefaultMaximumAltitudeIsFourMetres) {
+  EXPECT_DOUBLE_EQ(4.0, Limits{}.max_altitude);
+}
+
 TEST(SafetyPolicy, RejectsNonFiniteCommand) {
   SafetyPolicy policy(Limits{});
   geometry_msgs::Twist input;

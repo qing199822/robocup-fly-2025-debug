@@ -36,7 +36,7 @@ class SafetyFilterNode {
     private_nh_.param("max_xy_acceleration", limits.max_xy_acceleration, 2.0);
     private_nh_.param("max_z_acceleration", limits.max_z_acceleration, 1.0);
     private_nh_.param("min_altitude", limits.min_altitude, 0.5);
-    private_nh_.param("max_altitude", limits.max_altitude, 5.5);
+    private_nh_.param("max_altitude", limits.max_altitude, 4.0);
 
     if (!std::isfinite(publish_rate) || publish_rate <= 0.0 ||
         !std::isfinite(command_timeout_) || command_timeout_ <= 0.0 ||

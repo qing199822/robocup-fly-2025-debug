@@ -2,6 +2,8 @@
 <launch>
   <node pkg="safety_filter" type="safety_filter_node"
         name="safety_filter_under_test" required="true">
+    <rosparam command="load"
+              file="$(find safety_filter)/config/default.yaml"/>
     <param name="raw_command_topic" value="/test/raw_cmd"/>
     <param name="odom_topic" value="/test/odom"/>
     <param name="final_command_topic" value="/test/final_cmd"/>

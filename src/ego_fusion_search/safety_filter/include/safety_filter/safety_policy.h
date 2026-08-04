@@ -13,7 +13,7 @@ struct Limits {
   double max_xy_acceleration{2.0};
   double max_z_acceleration{1.0};
   double min_altitude{0.5};
-  double max_altitude{5.5};
+  double max_altitude{4.0};
 };
 
 struct Result {
