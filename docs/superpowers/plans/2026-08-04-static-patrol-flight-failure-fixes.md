@@ -308,7 +308,7 @@ catkin_make --pkg task_manager
 source devel/setup.bash
 rostest task_manager mission_active.test
 catkin_make run_tests_task_manager
-catkin_test_results build/task_manager
+catkin_test_results build/test_results/task_manager
 ```
 
 Expected: `mission_active` 先收到 `false` 后收到 `true`，task_manager 全部测试 0 error、0 failure。
@@ -473,7 +473,7 @@ catkin_make --pkg tracking
 source devel/setup.bash
 rostest tracking takeoff_gate.test
 catkin_make run_tests_tracking
-catkin_test_results build/tracking
+catkin_test_results build/test_results/tracking
 ```
 
 Expected: 四种组合只有 `true / true` 请求目标并发送 `PAUSE`；任一关闭均只释放一次且不产生新控制动作；tracking 全部测试 0 error、0 failure。
@@ -508,7 +508,8 @@ python3 src/mix_nav/task_manager/test/test_mission_clearance.py -v
 source /opt/ros/noetic/setup.bash
 catkin_make --pkg task_manager tracking safety_filter
 catkin_make run_tests_task_manager run_tests_tracking run_tests_safety_filter
-catkin_test_results build/task_manager build/tracking build/safety_filter
+catkin_test_results build/test_results/task_manager \
+  build/test_results/tracking build/test_results/safety_filter
 ```
 
 Expected: 几何测试全过；三个包汇总 0 error、0 failure。
