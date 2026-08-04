@@ -10,6 +10,7 @@
 #include "topic_tools/MuxSelect.h"
 #include "look_up/RequestTarget.h"
 #include "look_up/ReleaseTarget.h"
+#include "look_up/CompleteTarget.h"
 
 /**
  * @class ServiceManager
@@ -50,6 +51,13 @@ public:
      */
     bool releaseTarget(const std::string& target_id);
 
+    /**
+     * @brief Permanently marks a locked target as completed.
+     * @param target_id The ID of the target whose report is complete.
+     * @return True only when the completion service accepts the request.
+     */
+    bool completeTarget(const std::string& target_id);
+
 private:
     /**
      * @brief Initializes the MUX selection service client.
@@ -71,10 +79,11 @@ private:
     // Maps to hold clients for requesting and releasing multiple targets
     std::map<std::string, ros::ServiceClient> request_clients_;
     std::map<std::string, ros::ServiceClient> release_clients_;
+    ros::ServiceClient complete_client_;
 
     // List of supported target IDs
     const std::vector<std::string> TARGET_IDS_ = {
-        "green0", "blue1", "brown2", "white3", "red4", "person"
+        "green0", "blue1", "brown2", "white3", "red4", "red5", "person"
     };
 };
 

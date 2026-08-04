@@ -37,6 +37,10 @@ void ServiceManager::initTargetServices() {
         release_clients_[tid] = nh_.serviceClient<look_up::ReleaseTarget>(rel_name);
     }
 
+    const std::string complete_name = "/lookup/complete_target";
+    ros::service::waitForService(complete_name);
+    complete_client_ = nh_.serviceClient<look_up::CompleteTarget>(complete_name);
+
     ROS_INFO("[%s_%s Tracker] All target management services connected.",
              vehicle_type_.c_str(), vehicle_id_.c_str());
 }
@@ -104,4 +108,24 @@ bool ServiceManager::releaseTarget(const std::string& target_id) {
         ROS_ERROR("Failed to call release service for target '%s'.", target_id.c_str());
         return false;
     }
+}
+
+bool ServiceManager::completeTarget(const std::string& target_id) {
+    look_up::CompleteTarget srv;
+    srv.request.target_id = target_id;
+
+    if (!complete_client_.call(srv)) {
+        ROS_ERROR("[%s_%s Tracker] Failed to call completion service for target '%s'.",
+                  vehicle_type_.c_str(), vehicle_id_.c_str(), target_id.c_str());
+        return false;
+    }
+    if (!srv.response.success) {
+        ROS_ERROR("[%s_%s Tracker] Completion service rejected target '%s'.",
+                  vehicle_type_.c_str(), vehicle_id_.c_str(), target_id.c_str());
+        return false;
+    }
+
+    ROS_INFO("[%s_%s Tracker] Completed target '%s'.",
+             vehicle_type_.c_str(), vehicle_id_.c_str(), target_id.c_str());
+    return true;
 }

@@ -1,5 +1,7 @@
 #include "tracking/state_machine.h"
 #include <Eigen/Dense>
+#include <cmath>
+#include <stdexcept>
 
 TrackingStateMachine::TrackingStateMachine(ros::NodeHandle& nh,
                                              const std::string& vehicle_type,
@@ -29,6 +31,24 @@ TrackingStateMachine::TrackingStateMachine(ros::NodeHandle& nh,
     nh_.param("state_machine/area_exit_threshold", AREA_EXIT_THRESHOLD_, 500.0);
     nh_.param("state_machine/lowered_tracking_height", LOWERED_TRACKING_HEIGHT_, 2.2);
     nh_.param("state_machine/lost_buffer_frames", LOST_BUFFER_FRAMES_, 5);
+
+    double broadcast_confirmation_duration;
+    double broadcast_heartbeat_timeout;
+    double tracking_session_timeout;
+    nh_.param("state_machine/broadcast_confirmation_duration",
+              broadcast_confirmation_duration, 15.0);
+    nh_.param("state_machine/broadcast_heartbeat_timeout",
+              broadcast_heartbeat_timeout, 0.5);
+    nh_.param("state_machine/tracking_session_timeout",
+              tracking_session_timeout, 20.0);
+    nh_.param("state_machine/retry_cooldown", retry_cooldown_, 5.0);
+    if (!std::isfinite(retry_cooldown_) || retry_cooldown_ <= 0.0) {
+        throw std::invalid_argument("retry cooldown must be finite and positive");
+    }
+    broadcast_progress_ = std::make_unique<BroadcastProgress>(
+        broadcast_confirmation_duration,
+        broadcast_heartbeat_timeout,
+        tracking_session_timeout);
 
     // Initialize Publishers
     std::string xtdrone_namespace = "/xtdrone/" + vehicle_type_ + "_" + vehicle_id_;
@@ -71,6 +91,16 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
         }
     }
 
+    if ((current_state_ == State::DASH ||
+         current_state_ == State::TRACKING ||
+         current_state_ == State::LOST) &&
+        broadcast_progress_->sessionTimedOut(now.toSec())) {
+        beginReturnToMission(
+            broadcast_progress_->broadcastConfirmed()
+                ? ReturnOutcome::COMPLETE
+                : ReturnOutcome::RELEASE_WITH_COOLDOWN);
+    }
+
     switch (current_state_) {
         case State::IDLE:
             handleIdleState(current_visible_targets);
@@ -86,6 +116,9 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
             break;
         case State::LOST:
             handleLostState(locked_target_bbox, dt);
+            break;
+        case State::RETURNING:
+            handleReturningState(dt);
             break;
     }
 }
@@ -108,6 +141,36 @@ void TrackingStateMachine::setMissionActive(bool active) {
     updateControlGateState("mission active");
 }
 
+void TrackingStateMachine::recordCoordinateBroadcast(
+    const std::string& vehicle_name,
+    const std::string& target_id,
+    const ros::Time& stamp) {
+    if (!takeoff_complete_ || !mission_active_ ||
+        (current_state_ != State::DASH && current_state_ != State::TRACKING) ||
+        vehicle_name != vehicle_type_ + "_" + vehicle_id_ ||
+        target_id != currently_tracked_target_id_) {
+        return;
+    }
+
+    const bool was_confirmed = broadcast_progress_->broadcastConfirmed();
+    if (!broadcast_progress_->recordHeartbeat(
+            stamp.toSec(), ros::Time::now().toSec())) {
+        return;
+    }
+
+    if (!heartbeat_received_) {
+        heartbeat_received_ = true;
+        ROS_INFO("[%s_%s Tracker] First valid coordinate broadcast for '%s'.",
+                 vehicle_type_.c_str(), vehicle_id_.c_str(), target_id.c_str());
+    }
+    if (!was_confirmed && broadcast_progress_->broadcastConfirmed() &&
+        !broadcast_confirmation_logged_) {
+        broadcast_confirmation_logged_ = true;
+        ROS_INFO("[%s_%s Tracker] Coordinate broadcast confirmed for '%s'.",
+                 vehicle_type_.c_str(), vehicle_id_.c_str(), target_id.c_str());
+    }
+}
+
 void TrackingStateMachine::updateControlGateState(const char* gate_name) {
     if (takeoff_complete_ && mission_active_) {
         last_update_time_ = ros::Time::now();
@@ -123,6 +186,15 @@ void TrackingStateMachine::updateControlGateState(const char* gate_name) {
 }
 
 void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targets) {
+    const ros::Time now = ros::Time::now();
+    for (auto it = cooldown_until_.begin(); it != cooldown_until_.end();) {
+        if (it->second <= now) {
+            it = cooldown_until_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     // Delayed release of previously tracked target
     if (!idle_entry_time_.is_zero() && !currently_tracked_target_id_.empty() &&
         (ros::Time::now() - idle_entry_time_).toSec() > 1.0) {
@@ -135,7 +207,8 @@ void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targ
     if (currently_tracked_target_id_.empty() && !current_visible_targets.empty()) {
         // 先检查是否有red4
         auto red4_it = current_visible_targets.find("red4");
-        if (red4_it != current_visible_targets.end()) {
+        if (red4_it != current_visible_targets.end() &&
+            cooldown_until_.count("red4") == 0) {
             if (requestTarget("red4")) {
                 // 成功获取red4
                 currently_tracked_target_id_ = "red4";
@@ -150,7 +223,8 @@ void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targ
         
         // 检查是否有red5
         auto red5_it = current_visible_targets.find("red5");
-        if (red5_it != current_visible_targets.end()) {
+        if (red5_it != current_visible_targets.end() &&
+            cooldown_until_.count("red5") == 0) {
             if (requestTarget("red5")) {
                 // 成功获取red5
                 currently_tracked_target_id_ = "red5";
@@ -166,6 +240,7 @@ void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targ
         for (const auto& pair : current_visible_targets) {
             // 跳过已经尝试过的red4和red5
             if (pair.first == "red4" || pair.first == "red5") continue;
+            if (cooldown_until_.count(pair.first) != 0) continue;
             
             if (requestTarget(pair.first)) {
                 currently_tracked_target_id_ = pair.first;
@@ -300,8 +375,40 @@ void TrackingStateMachine::handleLostState(const darknet_ros_msgs::BoundingBox* 
     if (locked_target_bbox != nullptr) {
         reacquireTarget(*locked_target_bbox);
     } else if ((ros::Time::now() - last_seen_time_) > lost_timeout_) {
-        returnControlToMission(dt);
+        beginReturnToMission(
+            broadcast_progress_->broadcastConfirmed()
+                ? ReturnOutcome::COMPLETE
+                : ReturnOutcome::RELEASE);
     }
+}
+
+void TrackingStateMachine::handleReturningState(double dt) {
+    ControlCommand zero_cmds;
+    publishCommands(zero_cmds, dt);
+
+    if (!navigator_selected_) {
+        const std::string navigator_topic =
+            "/" + vehicle_type_ + "_" + vehicle_id_ +
+            "/mux_inputs/navigator/cmd_vel";
+        if (!services_.switchControl(navigator_topic)) {
+            return;
+        }
+        navigator_selected_ = true;
+    }
+
+    if (return_outcome_ == ReturnOutcome::COMPLETE) {
+        if (!services_.completeTarget(currently_tracked_target_id_)) {
+            ++complete_attempts_;
+            if (complete_attempts_ < 3) {
+                return;
+            }
+            releaseTarget(currently_tracked_target_id_);
+        }
+    } else {
+        releaseTarget(currently_tracked_target_id_);
+    }
+
+    finalizeReturnToMission();
 }
 
 // --- State Transition & Action Methods Implementation ---
@@ -310,6 +417,7 @@ void TrackingStateMachine::enterDashState(double height) {
     ROS_INFO("[%s_%s Tracker] Small target detected, triggering dash mode!", vehicle_type_.c_str(), vehicle_id_.c_str());
     pauseMission();
     services_.switchControl("/" + vehicle_type_ + "_" + vehicle_id_ + "/mux_inputs/external/pose_cmd");
+    startBroadcastSession();
 
     dash_start_time_ = ros::Time::now();
     dash_initial_height_ = height;
@@ -328,6 +436,7 @@ void TrackingStateMachine::enterTrackingState(const darknet_ros_msgs::BoundingBo
 
     pauseMission();
     services_.switchControl("/" + vehicle_type_ + "_" + vehicle_id_ + "/mux_inputs/external/pose_cmd");
+    startBroadcastSession();
     
     target_height_ = height;
     initializeKalmanFilter(target);
@@ -371,28 +480,54 @@ void TrackingStateMachine::reacquireTarget(const darknet_ros_msgs::BoundingBox& 
     current_state_ = State::TRACKING;
 }
 
-void TrackingStateMachine::returnControlToMission(double dt) {
-    ROS_INFO("[%s_%s Tracker] Lost timeout, returning control...", vehicle_type_.c_str(), vehicle_id_.c_str());
-    services_.switchControl("/" + vehicle_type_ + "_" + vehicle_id_ + "/mux_inputs/navigator/cmd_vel");
-    
-    std_msgs::String hover_cmd;
-    hover_cmd.data = "HOVER";
-    cmd_pub_.publish(hover_cmd);
-    
-    ControlCommand zero_cmds;
-    publishCommands(zero_cmds, dt);
+void TrackingStateMachine::beginReturnToMission(ReturnOutcome outcome) {
+    if (current_state_ == State::RETURNING) {
+        return;
+    }
 
-    ROS_INFO("[%s_%s] Sending RESUME command to mission manager...", vehicle_type_.c_str(), vehicle_id_.c_str());
+    return_outcome_ = outcome;
+    navigator_selected_ = false;
+    complete_attempts_ = 0;
+    current_state_ = State::RETURNING;
+    ROS_INFO("[%s_%s Tracker] Returning control for target '%s'.",
+             vehicle_type_.c_str(), vehicle_id_.c_str(),
+             currently_tracked_target_id_.c_str());
+}
+
+void TrackingStateMachine::finalizeReturnToMission() {
+    if (return_outcome_ == ReturnOutcome::RELEASE_WITH_COOLDOWN &&
+        !currently_tracked_target_id_.empty()) {
+        cooldown_until_[currently_tracked_target_id_] =
+            ros::Time::now() + ros::Duration(retry_cooldown_);
+    }
+
+    ROS_INFO("[%s_%s] Sending RESUME command to mission manager...",
+             vehicle_type_.c_str(), vehicle_id_.c_str());
     std_msgs::String resume_cmd;
     resume_cmd.data = "RESUME";
     mission_control_pub_.publish(resume_cmd);
 
-    tracking_start_time_ = ros::Time(0);
-    height_lowered_ = false;
-    idle_entry_time_ = ros::Time::now();
+    currently_tracked_target_id_.clear();
+    kf_.reset();
+    broadcast_progress_->reset();
     current_state_ = State::IDLE;
+    idle_entry_time_ = ros::Time(0);
+    first_seen_time_ = ros::Time(0);
+    last_seen_time_ = ros::Time(0);
+    tracking_start_time_ = ros::Time(0);
+    dash_start_time_ = ros::Time(0);
+    dash_initial_height_ = 0.0;
+    target_height_ = 0.0;
+    height_lowered_ = false;
+    lost_frame_counter_ = 0;
+    return_outcome_ = ReturnOutcome::RELEASE;
+    navigator_selected_ = false;
+    complete_attempts_ = 0;
+    heartbeat_received_ = false;
+    broadcast_confirmation_logged_ = false;
 
-    ROS_INFO("[%s_%s Tracker] State: LOST -> IDLE", vehicle_type_.c_str(), vehicle_id_.c_str());
+    ROS_INFO("[%s_%s Tracker] State: RETURNING -> IDLE",
+             vehicle_type_.c_str(), vehicle_id_.c_str());
 }
 
 // --- Helper Methods Implementation ---
@@ -455,6 +590,12 @@ void TrackingStateMachine::pauseMission() {
     ros::Duration(0.1).sleep();
 }
 
+void TrackingStateMachine::startBroadcastSession() {
+    broadcast_progress_->start(ros::Time::now().toSec());
+    heartbeat_received_ = false;
+    broadcast_confirmation_logged_ = false;
+}
+
 void TrackingStateMachine::resetForClosedControlGate() {
     if (!currently_tracked_target_id_.empty()) {
         releaseTarget(currently_tracked_target_id_);
@@ -462,6 +603,7 @@ void TrackingStateMachine::resetForClosedControlGate() {
 
     currently_tracked_target_id_.clear();
     kf_.reset();
+    broadcast_progress_->reset();
     current_state_ = State::IDLE;
     idle_entry_time_ = ros::Time(0);
     first_seen_time_ = ros::Time(0);
@@ -473,6 +615,11 @@ void TrackingStateMachine::resetForClosedControlGate() {
     target_height_ = 0.0;
     height_lowered_ = false;
     lost_frame_counter_ = 0;
+    return_outcome_ = ReturnOutcome::RELEASE;
+    navigator_selected_ = false;
+    complete_attempts_ = 0;
+    heartbeat_received_ = false;
+    broadcast_confirmation_logged_ = false;
 }
 
 std::string TrackingStateMachine::stateToString(State state) {
@@ -482,6 +629,7 @@ std::string TrackingStateMachine::stateToString(State state) {
         case State::DASH: return "DASH";
         case State::TRACKING: return "TRACKING";
         case State::LOST: return "LOST";
+        case State::RETURNING: return "RETURNING";
         default: return "UNKNOWN";
     }
 }

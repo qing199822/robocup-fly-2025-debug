@@ -15,6 +15,7 @@
 
 // Project-specific headers
 #include "tracking/controller.h"
+#include "tracking/broadcast_progress.h"
 #include "tracking/service_manager.h"
 #include "tracking/kalman_filter.h"
 
@@ -30,7 +31,8 @@ enum class State {
     DETECTING,
     DASH,
     TRACKING,
-    LOST
+    LOST,
+    RETURNING
 };
 
 /**
@@ -69,14 +71,24 @@ public:
 
     void setTakeoffComplete(bool complete);
     void setMissionActive(bool active);
+    void recordCoordinateBroadcast(const std::string& vehicle_name,
+                                   const std::string& target_id,
+                                   const ros::Time& stamp);
 
 private:
+    enum class ReturnOutcome {
+        RELEASE,
+        COMPLETE,
+        RELEASE_WITH_COOLDOWN
+    };
+
     // --- State Handler Methods ---
     void handleIdleState(const TargetMap& current_visible_targets);
     void handleDetectingState(const darknet_ros_msgs::BoundingBox* locked_target_bbox, double height, const geometry_msgs::Twist& current_velocity_body);
     void handleDashState(const darknet_ros_msgs::BoundingBox* locked_target_bbox, double height, double dt);
     void handleTrackingState(const darknet_ros_msgs::BoundingBox* locked_target_bbox, double height, const geometry_msgs::Twist& current_velocity_body, double dt);
     void handleLostState(const darknet_ros_msgs::BoundingBox* locked_target_bbox, double dt);
+    void handleReturningState(double dt);
 
     // --- State Transition & Action Methods ---
     void enterDashState(double height);
@@ -84,7 +96,8 @@ private:
     void enterTrackingFromDash(const darknet_ros_msgs::BoundingBox& target);
     void enterLostState();
     void reacquireTarget(const darknet_ros_msgs::BoundingBox& target);
-    void returnControlToMission(double dt);
+    void beginReturnToMission(ReturnOutcome outcome);
+    void finalizeReturnToMission();
 
     // --- Helper Methods ---
     void checkHeightLowering();
@@ -93,6 +106,7 @@ private:
     bool requestTarget(const std::string& target_id);
     void releaseTarget(const std::string& target_id);
     void pauseMission();
+    void startBroadcastSession();
     void updateControlGateState(const char* gate_name);
     void resetForClosedControlGate();
     std::string stateToString(State state);
@@ -106,6 +120,7 @@ private:
     ServiceManager& services_;
     std::unique_ptr<IMMFilter> kf_;
     std::unique_ptr<OutputSmoother> smoother_;
+    std::unique_ptr<BroadcastProgress> broadcast_progress_;
 
     // --- ROS Publishers ---
     ros::Publisher cmd_vel_pub_;
@@ -126,6 +141,12 @@ private:
     bool takeoff_complete_ = false;
     bool mission_active_ = false;
     int lost_frame_counter_ = 0;
+    std::map<std::string, ros::Time> cooldown_until_;
+    ReturnOutcome return_outcome_ = ReturnOutcome::RELEASE;
+    bool navigator_selected_ = false;
+    int complete_attempts_ = 0;
+    bool heartbeat_received_ = false;
+    bool broadcast_confirmation_logged_ = false;
     
     // --- Configuration Parameters (loaded from server) ---
     ros::Duration confirmation_duration_;
@@ -137,6 +158,7 @@ private:
     double HEIGHT_LOWER_DELAY_;
     double LOWERED_TRACKING_HEIGHT_;
     int LOST_BUFFER_FRAMES_;
+    double retry_cooldown_ = 5.0;
     double target_height_ = 0; // Runtime-set target height
 };
 

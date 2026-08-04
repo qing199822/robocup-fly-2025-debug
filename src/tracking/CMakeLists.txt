@@ -70,6 +70,7 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(broadcast_progress_test ${catkin_LIBRARIES})
   endif()
   add_rostest(test/takeoff_gate.test)
+  add_rostest(test/tracking_completion.test)
 endif()
 
 # ========================= 6. 安装规则 (可选但推荐) =========================

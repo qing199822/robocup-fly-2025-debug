@@ -1,0 +1,15 @@
+<launch>
+  <node pkg="tracking" type="tracking_node" name="tracking_node_under_test"
+        args="test_drone 0" output="screen">
+    <rosparam file="$(find tracking)/config/params.yaml" command="load"/>
+    <param name="state_machine/confirmation_duration" value="0.0"/>
+    <param name="state_machine/lost_timeout" value="0.1"/>
+    <param name="state_machine/broadcast_confirmation_duration" value="0.3"/>
+    <param name="state_machine/broadcast_heartbeat_timeout" value="0.1"/>
+    <param name="state_machine/tracking_session_timeout" value="1.2"/>
+    <param name="state_machine/retry_cooldown" value="0.4"/>
+  </node>
+
+  <test test-name="tracking_completion" pkg="tracking"
+        type="test_tracking_completion.py" time-limit="25"/>
+</launch>

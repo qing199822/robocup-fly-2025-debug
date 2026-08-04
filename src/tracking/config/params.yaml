@@ -22,6 +22,18 @@ state_machine:
   #   - 如果检测器非常可靠，可以减少此值 (例如 2-3) 以更快地响应真正的丢失。
   lost_buffer_frames: 5
 
+  # 裁判坐标广播必须连续满足的时间 (秒)
+  broadcast_confirmation_duration: 15.0
+
+  # 相邻有效广播心跳允许的最大间隔 (秒)
+  broadcast_heartbeat_timeout: 0.5
+
+  # 单次人物跟踪会话的最长时间 (秒)
+  tracking_session_timeout: 20.0
+
+  # 广播未确认便超时后，本机再次申请同一人物前的等待时间 (秒)
+  retry_cooldown: 5.0
+
   # 目标边界框面积 (像素^2)
   # 控制器试图维持的目标理想面积。这是前后速度控制的核心。
   # 调参建议:

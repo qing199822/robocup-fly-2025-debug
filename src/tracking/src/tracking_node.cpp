@@ -7,6 +7,7 @@
 #include <geometry_msgs/TwistStamped.h>
 #include <darknet_ros_msgs/BoundingBoxes.h>
 #include <std_msgs/Bool.h>
+#include <look_up/CoordinateBroadcastHeartbeat.h>
 
 // All the custom module headers
 #include "tracking/state_machine.h"
@@ -99,6 +100,10 @@ private:
         mission_active_sub_ = nh_.subscribe<std_msgs::Bool>(
             ns + "/mission/active", 1,
             &TrackingNode::missionActiveCallback, this);
+
+        heartbeat_sub_ = nh_.subscribe<look_up::CoordinateBroadcastHeartbeat>(
+            ns + "/coordinate_broadcast/heartbeat", 10,
+            &TrackingNode::heartbeatCallback, this);
     }
 
     /**
@@ -147,6 +152,12 @@ private:
         state_machine_->setMissionActive(msg->data);
     }
 
+    void heartbeatCallback(
+        const look_up::CoordinateBroadcastHeartbeat::ConstPtr& msg) {
+        state_machine_->recordCoordinateBroadcast(
+            msg->vehicle_name, msg->target_id, msg->header.stamp);
+    }
+
     // --- ROS and Core Components ---
     ros::NodeHandle& nh_;
     std::string vehicle_type_;
@@ -162,6 +173,7 @@ private:
     ros::Subscriber velocity_sub_;
     ros::Subscriber takeoff_complete_sub_;
     ros::Subscriber mission_active_sub_;
+    ros::Subscriber heartbeat_sub_;
 
     // --- Shared Data & Synchronization ---
     std::mutex data_mutex_;

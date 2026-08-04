@@ -8,6 +8,8 @@ import rostest
 from darknet_ros_msgs.msg import BoundingBox, BoundingBoxes
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from look_up.srv import (
+    CompleteTarget,
+    CompleteTargetResponse,
     ReleaseTarget,
     ReleaseTargetResponse,
     RequestTarget,
@@ -17,7 +19,7 @@ from std_msgs.msg import Bool, String
 from topic_tools.srv import MuxSelect, MuxSelectResponse
 
 
-TARGET_IDS = ("green0", "blue1", "brown2", "white3", "red4", "person")
+TARGET_IDS = ("green0", "blue1", "brown2", "white3", "red4", "red5", "person")
 
 
 class TrackingTakeoffGateTest(unittest.TestCase):
@@ -25,6 +27,7 @@ class TrackingTakeoffGateTest(unittest.TestCase):
         self.lock = threading.Lock()
         self.requested_targets = []
         self.released_targets = []
+        self.completed_targets = []
         self.selected_topics = []
         self.mission_commands = []
 
@@ -35,6 +38,13 @@ class TrackingTakeoffGateTest(unittest.TestCase):
                 self._select_callback,
             )
         ]
+        self.services.append(
+            rospy.Service(
+                "/lookup/complete_target",
+                CompleteTarget,
+                self._complete_callback,
+            )
+        )
         for target_id in TARGET_IDS:
             self.services.append(
                 rospy.Service(
@@ -95,6 +105,11 @@ class TrackingTakeoffGateTest(unittest.TestCase):
         with self.lock:
             self.released_targets.append(request.target_id)
         return ReleaseTargetResponse(success=True)
+
+    def _complete_callback(self, request):
+        with self.lock:
+            self.completed_targets.append(request.target_id)
+        return CompleteTargetResponse(success=True)
 
     def _mission_callback(self, message):
         with self.lock:
@@ -202,6 +217,7 @@ class TrackingTakeoffGateTest(unittest.TestCase):
         self.assertEqual(["green0"], self._snapshot(self.requested_targets))
         self.assertEqual(switch_count, len(self._snapshot(self.selected_topics)))
         self.assertEqual(mission_count, len(self._snapshot(self.mission_commands)))
+        self.assertEqual([], self._snapshot(self.completed_targets))
 
         self.mission_gate_pub.publish(Bool(data=True))
         self._publish_until(
