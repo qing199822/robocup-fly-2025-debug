@@ -95,6 +95,10 @@ private:
         takeoff_complete_sub_ = nh_.subscribe<std_msgs::Bool>(
             "/swarm/takeoff_complete", 1,
             &TrackingNode::takeoffCompleteCallback, this);
+
+        mission_active_sub_ = nh_.subscribe<std_msgs::Bool>(
+            ns + "/mission/active", 1,
+            &TrackingNode::missionActiveCallback, this);
     }
 
     /**
@@ -139,6 +143,10 @@ private:
         state_machine_->setTakeoffComplete(msg->data);
     }
 
+    void missionActiveCallback(const std_msgs::Bool::ConstPtr& msg) {
+        state_machine_->setMissionActive(msg->data);
+    }
+
     // --- ROS and Core Components ---
     ros::NodeHandle& nh_;
     std::string vehicle_type_;
@@ -153,6 +161,7 @@ private:
     ros::Subscriber pose_sub_;
     ros::Subscriber velocity_sub_;
     ros::Subscriber takeoff_complete_sub_;
+    ros::Subscriber mission_active_sub_;
 
     // --- Shared Data & Synchronization ---
     std::mutex data_mutex_;

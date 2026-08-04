@@ -51,8 +51,11 @@ class TrackingTakeoffGateTest(unittest.TestCase):
                 )
             )
 
-        self.gate_pub = rospy.Publisher(
+        self.takeoff_gate_pub = rospy.Publisher(
             "/swarm/takeoff_complete", Bool, queue_size=1, latch=True
+        )
+        self.mission_gate_pub = rospy.Publisher(
+            "/test_drone_0/mission/active", Bool, queue_size=1, latch=True
         )
         self.pose_pub = rospy.Publisher(
             "/test_drone_0/mavros/local_position/pose",
@@ -75,7 +78,8 @@ class TrackingTakeoffGateTest(unittest.TestCase):
             self._mission_callback,
             queue_size=10,
         )
-        self.gate_pub.publish(Bool(data=False))
+        self.takeoff_gate_pub.publish(Bool(data=False))
+        self.mission_gate_pub.publish(Bool(data=False))
 
     def _select_callback(self, request):
         with self.lock:
@@ -148,23 +152,36 @@ class TrackingTakeoffGateTest(unittest.TestCase):
             rate.sleep()
         self.fail(message)
 
-    def test_gate_blocks_then_allows_and_resets_tracking(self):
+    def test_both_gates_are_required_and_each_gate_resets_tracking(self):
         self._publish_inputs_for(0.5)
         self.assertEqual([], self._snapshot(self.requested_targets))
         self.assertEqual([], self._snapshot(self.selected_topics))
         self.assertEqual([], self._snapshot(self.mission_commands))
 
-        self.gate_pub.publish(Bool(data=True))
+        self.takeoff_gate_pub.publish(Bool(data=True))
+        self._publish_inputs_for(0.5)
+        self.assertEqual([], self._snapshot(self.requested_targets))
+        self.assertEqual([], self._snapshot(self.selected_topics))
+        self.assertEqual([], self._snapshot(self.mission_commands))
+
+        self.takeoff_gate_pub.publish(Bool(data=False))
+        self.mission_gate_pub.publish(Bool(data=True))
+        self._publish_inputs_for(0.5)
+        self.assertEqual([], self._snapshot(self.requested_targets))
+        self.assertEqual([], self._snapshot(self.selected_topics))
+        self.assertEqual([], self._snapshot(self.mission_commands))
+
+        self.takeoff_gate_pub.publish(Bool(data=True))
         self._publish_until(
             lambda: self._snapshot(self.requested_targets) == ["green0"],
-            "open gate did not allow target request",
+            "both open gates did not allow target request",
         )
         self._publish_until(
             lambda: any(
                 topic.endswith("/mux_inputs/external/pose_cmd")
                 for topic in self._snapshot(self.selected_topics)
             ),
-            "open gate did not allow tracking takeover",
+            "both open gates did not allow tracking takeover",
         )
         self._wait_for(
             lambda: "PAUSE" in self._snapshot(self.mission_commands),
@@ -173,16 +190,51 @@ class TrackingTakeoffGateTest(unittest.TestCase):
 
         switch_count = len(self._snapshot(self.selected_topics))
         mission_count = len(self._snapshot(self.mission_commands))
-        self.gate_pub.publish(Bool(data=False))
+        self.mission_gate_pub.publish(Bool(data=False))
         self._wait_for(
             lambda: self._snapshot(self.released_targets) == ["green0"],
-            "closing gate did not release the tracked target",
+            "closing mission gate did not release the tracked target",
         )
-        self.gate_pub.publish(Bool(data=False))
+        self.mission_gate_pub.publish(Bool(data=False))
         self._publish_inputs_for(0.5)
 
         self.assertEqual(["green0"], self._snapshot(self.released_targets))
         self.assertEqual(["green0"], self._snapshot(self.requested_targets))
+        self.assertEqual(switch_count, len(self._snapshot(self.selected_topics)))
+        self.assertEqual(mission_count, len(self._snapshot(self.mission_commands)))
+
+        self.mission_gate_pub.publish(Bool(data=True))
+        self._publish_until(
+            lambda: self._snapshot(self.requested_targets) ==
+            ["green0", "green0"],
+            "reopening both gates did not allow another target request",
+        )
+        self._publish_until(
+            lambda: len(self._snapshot(self.selected_topics)) > switch_count,
+            "reopening both gates did not allow another tracking takeover",
+        )
+        self._wait_for(
+            lambda: len(self._snapshot(self.mission_commands)) > mission_count,
+            "reopening both gates did not pause the mission",
+        )
+
+        switch_count = len(self._snapshot(self.selected_topics))
+        mission_count = len(self._snapshot(self.mission_commands))
+        self.takeoff_gate_pub.publish(Bool(data=False))
+        self._wait_for(
+            lambda: self._snapshot(self.released_targets) ==
+            ["green0", "green0"],
+            "closing takeoff gate did not release the tracked target",
+        )
+        self.takeoff_gate_pub.publish(Bool(data=False))
+        self._publish_inputs_for(0.5)
+
+        self.assertEqual(
+            ["green0", "green0"], self._snapshot(self.released_targets)
+        )
+        self.assertEqual(
+            ["green0", "green0"], self._snapshot(self.requested_targets)
+        )
         self.assertEqual(switch_count, len(self._snapshot(self.selected_topics)))
         self.assertEqual(mission_count, len(self._snapshot(self.mission_commands)))
 

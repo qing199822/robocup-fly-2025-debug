@@ -50,7 +50,7 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
                                     const geometry_msgs::Pose& current_pose,
                                     const geometry_msgs::Twist& current_velocity_body)
 {
-    if (!takeoff_complete_) {
+    if (!takeoff_complete_ || !mission_active_) {
         return;
     }
 
@@ -96,16 +96,30 @@ void TrackingStateMachine::setTakeoffComplete(bool complete) {
     }
 
     takeoff_complete_ = complete;
-    if (takeoff_complete_) {
-        last_update_time_ = ros::Time::now();
-        ROS_INFO("[%s_%s Tracker] Takeoff gate opened.",
-                 vehicle_type_.c_str(), vehicle_id_.c_str());
+    updateControlGateState("takeoff");
+}
+
+void TrackingStateMachine::setMissionActive(bool active) {
+    if (mission_active_ == active) {
         return;
     }
 
-    ROS_WARN("[%s_%s Tracker] Takeoff gate closed; resetting tracking state.",
-             vehicle_type_.c_str(), vehicle_id_.c_str());
-    resetForClosedTakeoffGate();
+    mission_active_ = active;
+    updateControlGateState("mission active");
+}
+
+void TrackingStateMachine::updateControlGateState(const char* gate_name) {
+    if (takeoff_complete_ && mission_active_) {
+        last_update_time_ = ros::Time::now();
+        ROS_INFO("[%s_%s Tracker] Control gates opened after %s update.",
+                 vehicle_type_.c_str(), vehicle_id_.c_str(), gate_name);
+        return;
+    }
+
+    ROS_WARN("[%s_%s Tracker] Control gate closed after %s update; "
+             "resetting tracking state.",
+             vehicle_type_.c_str(), vehicle_id_.c_str(), gate_name);
+    resetForClosedControlGate();
 }
 
 void TrackingStateMachine::handleIdleState(const TargetMap& current_visible_targets) {
@@ -441,7 +455,7 @@ void TrackingStateMachine::pauseMission() {
     ros::Duration(0.1).sleep();
 }
 
-void TrackingStateMachine::resetForClosedTakeoffGate() {
+void TrackingStateMachine::resetForClosedControlGate() {
     if (!currently_tracked_target_id_.empty()) {
         releaseTarget(currently_tracked_target_id_);
     }

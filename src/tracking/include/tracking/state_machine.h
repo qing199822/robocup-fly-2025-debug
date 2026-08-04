@@ -68,6 +68,7 @@ public:
                 const geometry_msgs::Twist& current_velocity_body);
 
     void setTakeoffComplete(bool complete);
+    void setMissionActive(bool active);
 
 private:
     // --- State Handler Methods ---
@@ -92,7 +93,8 @@ private:
     bool requestTarget(const std::string& target_id);
     void releaseTarget(const std::string& target_id);
     void pauseMission();
-    void resetForClosedTakeoffGate();
+    void updateControlGateState(const char* gate_name);
+    void resetForClosedControlGate();
     std::string stateToString(State state);
 
     // --- ROS and Core Components ---
@@ -122,6 +124,7 @@ private:
     double dash_initial_height_ = 0.0;
     bool height_lowered_ = false;
     bool takeoff_complete_ = false;
+    bool mission_active_ = false;
     int lost_frame_counter_ = 0;
     
     // --- Configuration Parameters (loaded from server) ---
