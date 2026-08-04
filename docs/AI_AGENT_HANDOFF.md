@@ -136,10 +136,11 @@ git remote -v
 ```text
 Realsense RGB
   -> yolo11n.py
-  -> actor_msgs/ActorInfo
+  -> darknet_ros_msgs/BoundingBoxes
   -> bbox2coord_node.py + depth + CameraInfo + TF
-  -> 目标三维位置
-  -> look_up / tracking
+  -> actor_msgs/ActorInfo（裁判话题）
+  -> CoordinateBroadcastHeartbeat（队伍内部确认）
+  -> tracking / look_up 完成状态
 ```
 
 控制命令必须依次经过 MUX 和后置安全过滤：
@@ -156,6 +157,8 @@ tracking -> external input ----------+                     |
 起飞节点先选择 takeoff；六机全部成功并发送零速度、HOVER 后才选择 navigator。任何起飞未完成或部分交权失败都保持或回滚到零速度 takeoff。跟踪通过现有 MUX 服务在 external 与 navigator 之间切换。
 
 `/swarm/takeoff_complete` 是全机门控，类型为锁存的 `std_msgs/Bool`。`confident_takeoff_node` 启动时发布 `false`，只有六机全部到高且 navigator 交权全部成功后才发布 `true`。tracking 默认按 `false` 处理：不能锁目标、发布 `PAUSE` 或选择 external；运行中回退为 `false` 时只释放一次目标并清空状态，不主动切换 MUX。成功后起飞节点保持空闲存活只是为了保存 ROS 1 锁存值，不再发送任何飞行命令。
+
+人物完成条件以成功发布裁判 `ActorInfo` 后的本机结构化心跳为准，不以检测框可见时间为准。tracking 要求同一架无人机对当前锁定人物连续广播 15 秒，相邻心跳默认不能超过 0.5 秒。确认后继续跟踪并等待裁判移除；单次会话最多 20 秒。人物消失或会话到期后进入显式 `RETURNING`：先持续发布零 external 命令，成功切回 navigator MUX，再完成或释放中央锁，最后只发送一次 `RESUME`。MUX 失败时不得提前恢复任务。未满 15 秒便达到 20 秒上限的目标只释放，并对本机设置 5 秒重试冷却；`COMPLETED` 目标不能再次申请。
 
 固定巡逻的高度合同是起飞 3.0 米、任务航点 3.5 米、`safety_filter` 默认上限 4.0 米。任务管理器先完整校验六机 JSON，再创建线程；每机的 `entry_waypoints` 只执行一次，`waypoints` 在最后一点到第一点之间隐式闭环。跟踪暂停会保存当前处于进入还是巡逻阶段，返航后从原阶段和原索引继续。
 
@@ -507,6 +510,7 @@ git ls-remote --heads public competition-clean
 - 启动器清理失败使用保留状态 `125`，受监督命令自然返回同一状态时日志可能表现为监督清理失败，但最终仍是非零失败。
 - 六机仿真资源消耗高。不能用减少实例、跳过相机或缩短就绪检查来让验收看起来更快。
 - `smoke` 证明消息和节点存在，不证明完整比赛路线安全；任务修改仍需全航程观察、限高和碰撞验证。
+- 坐标广播完成与恢复巡逻已有自动化 ROS 测试，但在新的真实六机运行证据写入本文档前，不能把自动化结果描述为现场通过。
 
 ## 新 Agent 首次接手清单
 
@@ -646,3 +650,25 @@ git ls-remote --heads public competition-clean
 - 5 号机撞 `house_3_68`、2 号机撞 `house_3_156` 的完整控制链原因尚未闭合。结合暂停/恢复日志，必须区分静态任务段、tracking 外部控制和断点返航段，再决定是补障碍、修返航还是调整跟踪退出；不要直接改官方 world 或飞控。
 - 0 号机本轮未坠毁但始终没有航点到达，需从 bag 中结合目标锁定、MUX 和任务状态单独分析。现有 bag 没有记录 MUX selected 和 mission control 话题，下一轮证据采集应补上这两类话题。
 - 当前真实复验失败，禁止把 `competition-clean` 描述为全航程安全或比赛就绪。
+
+## 2026-08-04 人物坐标广播完成与恢复巡逻
+
+### 规则与实现
+
+- 规则要求连续 15 秒正确广播人物 ID 和坐标；本实现只在 `ActorInfo` 真正发布成功后生成结构化心跳。
+- `look_up` 将人物状态扩展为 `AVAILABLE`、`TRACKED`、`COMPLETED`，完成状态幂等且普通 release 不能重新开放。
+- tracking 使用独立 `BroadcastProgress` 计算 15 秒连续广播和 20 秒会话上限；错误无人机、错误人物、未来、倒退、零和断续时间戳不会错误累计。
+- 返回巡逻通过 `RETURNING` 状态保证零命令、navigator MUX、complete/release、单次 `RESUME` 的顺序。navigator 切换失败会重试；完成调用最多 3 次，失败后只按普通 release 处理。
+- 本轮只修改队伍自有 `look_up`、`yolo`、`tracking`、测试和文档。PX4、XTDrone、Gazebo、EGO-Planner-Swarm、第三方 actor 插件和官方无人机模型均未修改。
+
+### 自动化证据
+
+- TDD 的 RED 证据是旧状态机在 navigator MUX 第一次失败后仍立即发送 `RESUME`，且人物消失后没有调用 `complete(green0)`。
+- Task 4 聚焦结果：tracking 汇总 14 项，0 errors、0 failures；其中完成流程验证 `mux_fail -> mux_success -> complete(green0) -> RESUME`，未确认的 `blue1` 在 20 秒等比例加速上限后只 release，并遵守本机冷却。
+- fresh 完整 verifier 在本机权限下通过：仓库 Python 137 项、Catkin 192 项，均为 0 errors、0 failures；Release 构建、actor collision 外置构建、静态与构建后官方文件检查均通过。隔离环境不能枚举网络接口，因此 ROS 测试按既定方式在本机权限下执行。
+- verifier 后 `git -C "$XTDRONE_DIR" status --short` 为空。PX4、XTDrone、Gazebo、EGO-Planner-Swarm、第三方 actor 插件源码和官方模型均未被本轮修改。
+- 本轮真实六机结果仍必须在执行后补充；未记录前视为未验证。
+
+### 当前安全结论
+
+本功能的自动化流程通过不改变上一节真实六机结论：当前全航程仍存在 4/5 号机动态碰撞、2/5 号机撞房以及 0 号机无航点进度问题，禁止称为比赛就绪。
