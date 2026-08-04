@@ -42,6 +42,7 @@ add_executable(tracking_node
   src/tracking_node.cpp
   src/controller.cpp
   src/state_machine.cpp
+  src/broadcast_progress.cpp
   src/kalman_filter.cpp
   src/kalman_filter_base.cpp
   src/service_manager.cpp
@@ -61,6 +62,13 @@ target_link_libraries(tracking_node
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  catkin_add_gtest(broadcast_progress_test
+    test/broadcast_progress_test.cpp
+    src/broadcast_progress.cpp
+  )
+  if(TARGET broadcast_progress_test)
+    target_link_libraries(broadcast_progress_test ${catkin_LIBRARIES})
+  endif()
   add_rostest(test/takeoff_gate.test)
 endif()
 
