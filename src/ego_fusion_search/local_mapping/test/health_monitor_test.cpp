@@ -9,9 +9,20 @@ namespace {
 
 using local_mapping::HealthConfig;
 using local_mapping::HealthMonitor;
+using local_mapping::HealthResult;
 
 HealthConfig standardConfig() {
   return HealthConfig{0.15, 0.50, 0.50, 1.00, 0.20};
+}
+
+TEST(HealthResult, DefaultsToNotReady) {
+  const HealthResult result{};
+  EXPECT_FALSE(result.healthy);
+  EXPECT_FALSE(result.depth_healthy);
+  EXPECT_FALSE(result.odom_healthy);
+  EXPECT_FALSE(result.synchronized);
+  EXPECT_DOUBLE_EQ(0.0, result.valid_depth_ratio);
+  EXPECT_EQ("NOT_READY", result.fault_code);
 }
 
 TEST(HealthMonitor, RequiresContinuousRecoveryWindow) {

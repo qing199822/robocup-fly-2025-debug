@@ -18,6 +18,7 @@ add_library(local_mapping_health src/health_monitor.cpp)
 target_link_libraries(local_mapping_health ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
   catkin_add_gtest(health_monitor_test test/health_monitor_test.cpp)
   if(TARGET health_monitor_test)
     target_link_libraries(

@@ -15,12 +15,12 @@ struct HealthConfig {
 };
 
 struct HealthResult {
-  bool healthy;
-  bool depth_healthy;
-  bool odom_healthy;
-  bool synchronized;
-  double valid_depth_ratio;
-  std::string fault_code;
+  bool healthy = false;
+  bool depth_healthy = false;
+  bool odom_healthy = false;
+  bool synchronized = false;
+  double valid_depth_ratio = 0.0;
+  std::string fault_code = "NOT_READY";
 };
 
 class HealthMonitor {
