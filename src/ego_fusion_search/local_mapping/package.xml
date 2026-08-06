@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>local_mapping</name>
+  <version>0.1.0</version>
+  <description>Local semantic mapping foundation for team-owned navigation.</description>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
+  <license>LicenseRef-Team-Code</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>cv_bridge</depend>
+  <depend>darknet_ros_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>message_filters</depend>
+  <depend>nav_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+  <depend>search_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
+</package>

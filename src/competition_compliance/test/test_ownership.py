@@ -42,7 +42,15 @@ ACTOR_COPY = ROOT / "src/gazebo_ros_actor_plugin"
 
 TEAM_ENTRIES = {
     "src/competition_compliance": ("0.1.0", "LicenseRef-Team-Code"),
+    "src/ego_fusion_search/local_mapping": (
+        "0.1.0",
+        "LicenseRef-Team-Code",
+    ),
     "src/ego_fusion_search/safety_filter": (
+        "0.1.0",
+        "LicenseRef-Team-Code",
+    ),
+    "src/ego_fusion_search/search_msgs": (
         "0.1.0",
         "LicenseRef-Team-Code",
     ),
@@ -91,6 +99,18 @@ class OwnershipDocumentTest(unittest.TestCase):
         self.assertEqual({"entries"}, set(data))
         self.assertIsInstance(data["entries"], list)
         return data["entries"]
+
+    def test_local_mapping_team_packages_exist(self):
+        for package in (
+            "src/ego_fusion_search/search_msgs",
+            "src/ego_fusion_search/local_mapping",
+        ):
+            with self.subTest(package=package):
+                package_xml = ROOT / package / "package.xml"
+                self.assertTrue(
+                    package_xml.is_file(),
+                    f"missing team package manifest: {package_xml}",
+                )
 
     def test_every_catkin_package_has_exactly_one_owner_entry(self):
         entries = self.load_entries()

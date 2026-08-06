@@ -1,7 +1,9 @@
 {
   "entries": [
     {"path": "src/competition_compliance", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "LicenseRef-Team-Code"},
+    {"path": "src/ego_fusion_search/local_mapping", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "LicenseRef-Team-Code"},
     {"path": "src/ego_fusion_search/safety_filter", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "LicenseRef-Team-Code"},
+    {"path": "src/ego_fusion_search/search_msgs", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "LicenseRef-Team-Code"},
     {"path": "src/look_up", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "LicenseRef-Team-Code"},
     {"path": "src/mix_nav/fly", "kind": "team", "source": "this repository", "version": "1.0.0", "license": "BSD"},
     {"path": "src/mix_nav/simple_navigator", "kind": "team", "source": "this repository", "version": "0.1.0", "license": "BSD"},

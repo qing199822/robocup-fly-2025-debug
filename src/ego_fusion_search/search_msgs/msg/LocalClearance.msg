@@ -1,0 +1,13 @@
+std_msgs/Header header
+bool forward_known
+bool backward_known
+bool left_known
+bool right_known
+bool upward_known
+bool downward_known
+float32 forward_m
+float32 backward_m
+float32 left_m
+float32 right_m
+float32 upward_m
+float32 downward_m
