@@ -15,6 +15,10 @@ HealthConfig standardConfig() {
   return HealthConfig{0.15, 0.50, 0.50, 1.00, 0.20};
 }
 
+HealthConfig shortRecoveryConfig() {
+  return HealthConfig{0.15, 0.50, 0.50, 0.10, 0.20};
+}
+
 TEST(HealthResult, DefaultsToNotReady) {
   const HealthResult result{};
   EXPECT_FALSE(result.healthy);
@@ -47,6 +51,55 @@ TEST(HealthMonitor, RequiresContinuousRecoveryWindow) {
   const auto result = monitor.evaluate(12.05);
   EXPECT_TRUE(result.healthy);
   EXPECT_EQ("OK", result.fault_code);
+}
+
+TEST(HealthMonitor, ShortRecoveryCannotPassWithoutNewObservations) {
+  HealthMonitor monitor(shortRecoveryConfig());
+  monitor.observeDepth(0.0, 0.8);
+  monitor.observeOdom(0.0);
+
+  EXPECT_FALSE(monitor.evaluate(0.0).healthy);
+  EXPECT_FALSE(monitor.evaluate(0.1).healthy);
+  EXPECT_FALSE(monitor.evaluate(0.2).healthy);
+}
+
+TEST(HealthMonitor, RecoveryRequiresBothStreamsToAdvance) {
+  HealthMonitor depth_only(shortRecoveryConfig());
+  depth_only.observeDepth(0.0, 0.8);
+  depth_only.observeOdom(0.0);
+  EXPECT_FALSE(depth_only.evaluate(0.0).healthy);
+  depth_only.observeDepth(0.1, 0.8);
+  EXPECT_FALSE(depth_only.evaluate(0.1).healthy);
+
+  HealthMonitor odom_only(shortRecoveryConfig());
+  odom_only.observeDepth(0.0, 0.8);
+  odom_only.observeOdom(0.0);
+  EXPECT_FALSE(odom_only.evaluate(0.0).healthy);
+  odom_only.observeOdom(0.1);
+  EXPECT_FALSE(odom_only.evaluate(0.1).healthy);
+}
+
+TEST(HealthMonitor, RecoveryPassesAfterBothStreamsAdvance) {
+  HealthMonitor monitor(shortRecoveryConfig());
+  monitor.observeDepth(0.0, 0.8);
+  monitor.observeOdom(0.0);
+  EXPECT_FALSE(monitor.evaluate(0.0).healthy);
+
+  monitor.observeDepth(0.05, 0.8);
+  monitor.observeOdom(0.05);
+  EXPECT_FALSE(monitor.evaluate(0.05).healthy);
+  EXPECT_TRUE(monitor.evaluate(0.1).healthy);
+}
+
+TEST(HealthMonitor, RepeatedObservationTimestampsDoNotAdvanceRecovery) {
+  HealthMonitor monitor(shortRecoveryConfig());
+  monitor.observeDepth(0.0, 0.8);
+  monitor.observeOdom(0.0);
+  EXPECT_FALSE(monitor.evaluate(0.0).healthy);
+
+  monitor.observeDepth(0.0, 0.8);
+  monitor.observeOdom(0.0);
+  EXPECT_FALSE(monitor.evaluate(0.1).healthy);
 }
 
 TEST(HealthMonitor, ReportsNotReadyWithoutBothObservations) {

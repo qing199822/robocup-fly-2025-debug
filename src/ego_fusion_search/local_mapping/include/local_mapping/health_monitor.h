@@ -46,6 +46,8 @@ class HealthMonitor {
   double valid_depth_ratio_;
   double last_evaluation_timestamp_;
   double recovery_start_timestamp_;
+  double recovery_depth_timestamp_;
+  double recovery_odom_timestamp_;
   std::uint32_t dropped_frames_;
 };
 

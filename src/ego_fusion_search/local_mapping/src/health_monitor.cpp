@@ -36,6 +36,10 @@ bool intervalReached(double current, double previous, double limit) {
   return current - previous + timestampTolerance(current, previous) >= limit;
 }
 
+bool timestampAdvanced(double current, double previous) {
+  return current > previous + timestampTolerance(current, previous);
+}
+
 }  // namespace
 
 HealthMonitor::HealthMonitor(const HealthConfig& config)
@@ -49,6 +53,8 @@ HealthMonitor::HealthMonitor(const HealthConfig& config)
       valid_depth_ratio_(0.0),
       last_evaluation_timestamp_(0.0),
       recovery_start_timestamp_(0.0),
+      recovery_depth_timestamp_(0.0),
+      recovery_odom_timestamp_(0.0),
       dropped_frames_(0) {
   if (!validConfig(config_)) {
     throw std::invalid_argument("invalid health monitor configuration");
@@ -171,6 +177,12 @@ HealthResult HealthMonitor::evaluate(double timestamp) {
   if (!recovery_active_) {
     recovery_active_ = true;
     recovery_start_timestamp_ = timestamp;
+    recovery_depth_timestamp_ = depth_timestamp_;
+    recovery_odom_timestamp_ = odom_timestamp_;
+    return result;
+  }
+  if (!timestampAdvanced(depth_timestamp_, recovery_depth_timestamp_) ||
+      !timestampAdvanced(odom_timestamp_, recovery_odom_timestamp_)) {
     return result;
   }
   if (!intervalReached(timestamp, recovery_start_timestamp_,
