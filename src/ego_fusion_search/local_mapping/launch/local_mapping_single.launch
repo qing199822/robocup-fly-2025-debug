@@ -1,5 +1,8 @@
 <?xml version="1.0"?>
 <launch>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+
   <arg name="depth_topic"
        default="/typhoon_h480_0/realsense/depth_camera/depth/image_raw"/>
   <arg name="camera_info_topic"
@@ -9,7 +12,8 @@
        default="/typhoon_h480_0/yolo11n/bounding_boxes"/>
 
   <node pkg="local_mapping" type="local_mapping_node"
-        name="local_mapping_typhoon_h480_0" required="true" output="screen">
+        name="$(eval 'local_mapping_typhoon_h480_0' if arg('vehicle_type') == 'typhoon_h480' and str(arg('drone_id')) == '0' else int('local_mapping_single.launch supports only vehicle_type:=typhoon_h480 drone_id:=0'))"
+        required="true" output="screen">
     <rosparam command="load"
               file="$(find local_mapping)/config/single_drone.yaml"/>
     <param name="depth_topic" value="$(arg depth_topic)"/>
