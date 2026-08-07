@@ -243,6 +243,8 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
 
   const std::size_t samples = sampleCount(max_distance);
   std::set<Key> visited;
+  bool occupied_found = false;
+  double first_occupied_distance = 0.0;
   for (std::size_t index = 0; index <= samples; ++index) {
     const long double distance =
         samples == 0u
@@ -264,9 +266,13 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
     if (state == CellState::UNKNOWN) {
       return Clearance{false, 0.0};
     }
-    if (state == CellState::OCCUPIED) {
-      return Clearance{true, entryDistance(origin, unit_axis, key)};
+    if (state == CellState::OCCUPIED && !occupied_found) {
+      occupied_found = true;
+      first_occupied_distance = entryDistance(origin, unit_axis, key);
     }
+  }
+  if (occupied_found) {
+    return Clearance{true, first_occupied_distance};
   }
   return Clearance{true, max_distance};
 }

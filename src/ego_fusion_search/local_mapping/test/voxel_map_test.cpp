@@ -106,6 +106,27 @@ TEST(VoxelMap, UnknownAfterKnownFreeSpaceStillReturnsNoPartialDistance) {
   EXPECT_DOUBLE_EQ(0.0, clearance.metres);
 }
 
+TEST(VoxelMap, UnknownAfterStaticObstacleOverridesObstacleDistance) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  map.integrateStaticRay({0.1, 0.1, 0.1}, {1.1, 0.1, 0.1});
+
+  const auto clearance =
+      map.axisClearance({0.1, 0.1, 0.1}, {1.0, 0.0, 0.0}, 2.0, 0.0);
+  EXPECT_FALSE(clearance.known);
+  EXPECT_DOUBLE_EQ(0.0, clearance.metres);
+}
+
+TEST(VoxelMap, UnknownAfterDynamicObstacleOverridesObstacleDistance) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  map.integrateStaticRay({0.1, 0.1, 0.1}, {-1.1, 0.1, 0.1});
+  map.integrateDynamicPoint({1.1, 0.1, 0.1}, 10.0);
+
+  const auto clearance =
+      map.axisClearance({0.1, 0.1, 0.1}, {1.0, 0.0, 0.0}, 2.0, 10.5);
+  EXPECT_FALSE(clearance.known);
+  EXPECT_DOUBLE_EQ(0.0, clearance.metres);
+}
+
 TEST(VoxelMap, ReportsMaximumDistanceWhenEveryTraversedVoxelIsFree) {
   VoxelMap map(1.0, 1, 1, 1.0);
   map.integrateStaticRay({0.1, 0.1, 0.1}, {4.1, 0.1, 0.1});
@@ -121,7 +142,7 @@ TEST(VoxelMap, StaticObstacleDistanceIsVoxelEntryDistance) {
   map.integrateStaticRay({0.1, 0.1, 0.1}, {3.1, 0.1, 0.1});
 
   const auto clearance =
-      map.axisClearance({0.1, 0.1, 0.1}, {1.0, 0.0, 0.0}, 4.0, 0.0);
+      map.axisClearance({0.1, 0.1, 0.1}, {1.0, 0.0, 0.0}, 3.0, 0.0);
   EXPECT_TRUE(clearance.known);
   EXPECT_NEAR(2.9, clearance.metres, 1e-12);
 }
@@ -155,7 +176,7 @@ TEST(VoxelMap, ChecksAllSixAxisDirections) {
     map.integrateStaticRay({0.5, 0.5, 0.5}, endpoint);
 
     const auto clearance =
-        map.axisClearance({0.5, 0.5, 0.5}, axis, 4.0, 0.0);
+        map.axisClearance({0.5, 0.5, 0.5}, axis, 3.0, 0.0);
     EXPECT_TRUE(clearance.known);
     EXPECT_NEAR(2.5, clearance.metres, 1e-12);
   }
