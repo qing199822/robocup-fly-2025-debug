@@ -9,6 +9,8 @@
 namespace local_mapping {
 namespace {
 
+constexpr long double kAxisTolerance = 1e-6L;
+
 bool isFinite(const Vec3& point) {
   return std::isfinite(point.x) && std::isfinite(point.y) &&
          std::isfinite(point.z);
@@ -174,6 +176,17 @@ CellState VoxelMap::stateForKey(const Key& key, double now) const {
   return staticState(key);
 }
 
+void VoxelMap::pruneExpiredDynamic(double now) const {
+  auto cell = dynamic_cells_.begin();
+  while (cell != dynamic_cells_.end()) {
+    if (now > cell->second && now - cell->second > dynamic_ttl_) {
+      cell = dynamic_cells_.erase(cell);
+    } else {
+      ++cell;
+    }
+  }
+}
+
 CellState VoxelMap::stateAt(const Vec3& point, double now) const {
   if (!std::isfinite(now)) {
     throw std::invalid_argument("query timestamp must be finite");
@@ -217,8 +230,23 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
       static_cast<long double>(unit_axis.x) * unit_axis.x +
       static_cast<long double>(unit_axis.y) * unit_axis.y +
       static_cast<long double>(unit_axis.z) * unit_axis.z);
-  if (std::fabs(axis_length - 1.0L) > 1e-6L) {
-    throw std::invalid_argument("clearance axis must have unit length");
+  const auto nearZero = [](double component) {
+    return std::fabs(static_cast<long double>(component)) <= kAxisTolerance;
+  };
+  const auto nearUnit = [](double component) {
+    return std::fabs(std::fabs(static_cast<long double>(component)) - 1.0L) <=
+           kAxisTolerance;
+  };
+  const bool x_axis =
+      nearUnit(unit_axis.x) && nearZero(unit_axis.y) && nearZero(unit_axis.z);
+  const bool y_axis =
+      nearZero(unit_axis.x) && nearUnit(unit_axis.y) && nearZero(unit_axis.z);
+  const bool z_axis =
+      nearZero(unit_axis.x) && nearZero(unit_axis.y) && nearUnit(unit_axis.z);
+  if (std::fabs(axis_length - 1.0L) > kAxisTolerance ||
+      !(x_axis || y_axis || z_axis)) {
+    throw std::invalid_argument(
+        "clearance axis must be an axis-aligned unit vector");
   }
 
   const long double endpoint_x =
@@ -294,11 +322,10 @@ std::vector<Vec3> VoxelMap::dynamicOccupiedPoints(double now) const {
   if (!std::isfinite(now)) {
     throw std::invalid_argument("query timestamp must be finite");
   }
+  pruneExpiredDynamic(now);
   std::vector<Vec3> points;
   for (const auto& cell : dynamic_cells_) {
-    if (now <= cell.second || now - cell.second <= dynamic_ttl_) {
-      points.push_back(centreFor(cell.first));
-    }
+    points.push_back(centreFor(cell.first));
   }
   return points;
 }

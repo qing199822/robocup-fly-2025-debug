@@ -1,3 +1,4 @@
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -234,6 +235,39 @@ TEST(VoxelMap, DynamicPointsNeverPolluteStaticEvidence) {
   EXPECT_EQ(CellState::UNKNOWN, map.stateAt({0.1, 0.1, 0.1}, 5.1));
 }
 
+TEST(VoxelMap, DynamicPointQueryPrunesExpiredTimestampBeforeOlderUpdate) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  map.integrateDynamicPoint({0.1, 0.1, 0.1}, 10.0);
+  EXPECT_TRUE(map.dynamicOccupiedPoints(12.0).empty());
+
+  map.integrateDynamicPoint({0.1, 0.1, 0.1}, 9.0);
+  EXPECT_TRUE(map.dynamicOccupiedPoints(10.5).empty());
+}
+
+TEST(VoxelMap, FutureDynamicPointSurvivesClockRollbackQuery) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  map.integrateDynamicPoint({1.1, 0.1, 0.1}, 20.0);
+
+  const auto points = map.dynamicOccupiedPoints(5.0);
+  ASSERT_EQ(1u, points.size());
+  expectPoint({1.5, 0.5, 0.5}, points[0]);
+}
+
+TEST(VoxelMap, DynamicPointQueryPrunesEveryExpiredVoxel) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  for (int index = 0; index < 128; ++index) {
+    map.integrateDynamicPoint(
+        {static_cast<double>(index) + 0.1, 0.1, 0.1}, 10.0);
+  }
+  EXPECT_TRUE(map.dynamicOccupiedPoints(12.0).empty());
+
+  for (int index = 0; index < 128; ++index) {
+    map.integrateDynamicPoint(
+        {static_cast<double>(index) + 0.1, 0.1, 0.1}, 9.0);
+  }
+  EXPECT_TRUE(map.dynamicOccupiedPoints(10.5).empty());
+}
+
 TEST(VoxelMap, RejectsInvalidConfiguration) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
@@ -293,6 +327,15 @@ TEST(VoxelMap, RejectsInvalidQueryInputs) {
                std::invalid_argument);
   EXPECT_THROW(map.axisClearance({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0},
                                  1.0, 0.0),
+               std::invalid_argument);
+}
+
+TEST(VoxelMap, RejectsDiagonalUnitClearanceAxis) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  const double diagonal = std::sqrt(0.5);
+
+  EXPECT_THROW(map.axisClearance({0.0, 0.0, 0.0},
+                                 {diagonal, diagonal, 0.0}, 0.0, 0.0),
                std::invalid_argument);
 }
 

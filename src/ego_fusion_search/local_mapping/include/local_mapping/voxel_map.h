@@ -53,6 +53,7 @@ class VoxelMap {
   std::size_t sampleCount(long double distance) const;
   CellState staticState(const Key& key) const;
   CellState stateForKey(const Key& key, double now) const;
+  void pruneExpiredDynamic(double now) const;
   double entryDistance(const Vec3& origin, const Vec3& unit_axis,
                        const Key& key) const;
 
@@ -61,7 +62,7 @@ class VoxelMap {
   std::uint32_t free_hits_;
   double dynamic_ttl_;
   std::map<Key, Evidence> static_cells_;
-  std::map<Key, double> dynamic_cells_;
+  mutable std::map<Key, double> dynamic_cells_;
 };
 
 }  // namespace local_mapping
