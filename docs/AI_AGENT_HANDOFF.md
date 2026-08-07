@@ -724,4 +724,4 @@ git ls-remote --heads public competition-clean
 
 本轮 Task 7B 未修改 PX4、XTDrone、Gazebo、EGO-Planner-Swarm、官方无人机模型或官方 World。本次 `1.sh` 真实运行在进入主启动流程前，已由启动器校验 PX4、XTDrone、Gazebo 模型和外部 Python 环境根目录均为独立只读挂载；官方 World 位于受保护的 PX4 树中。XTDrone 在运行前后的 `git status --short` 均为空。
 
-本节成文时，尚未取得针对当前 HEAD 的完整 `competition-clean` verifier 结果，因此不把历史的构建前后合规哈希当作本轮证据。主 Agent 完成验证后，应以本轮新生成的 `competition-artifacts/static-compliance.json` 和 `competition-artifacts/post-build-compliance.json` 补记构建前后哈希结果。
+针对当前 HEAD，主 Agent 已在系统环境完整运行 `bash scripts/verify_competition_clean.sh`，退出码为 0：仓库 Python 137 项测试通过；Catkin 最终汇总 373 项，0 errors、0 failures、0 skipped。构建前静态合规证据为 `competition-artifacts/static-compliance.json`，构建后合规证据为 `competition-artifacts/post-build-compliance.json`，两个证据文件的 SHA-256 均为 `9166b6474cc93f3b08fd61d29a15b0a545aef45e2805456973ba2d595b904cdf`。完整验证后 XTDrone 的 `git status --short` 仍为空。
