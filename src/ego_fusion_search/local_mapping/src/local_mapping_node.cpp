@@ -273,6 +273,8 @@ class LocalMappingNode {
         tf_listener_(tf_buffer_),
         has_reliable_odom_(false),
         last_fusion_valid_(false),
+        has_successful_fusion_(false),
+        last_successful_fusion_time_(0.0),
         last_mapping_fault_("NOT_READY"),
         cached_boxes_used_(false) {
     validateConfig(config_);
@@ -658,8 +660,10 @@ class LocalMappingNode {
       return;
     }
 
-    last_fusion_valid_ = true;
-    last_mapping_fault_ = "OK";
+    last_successful_fusion_time_ = ros::Time::now().toSec();
+    has_successful_fusion_ = finite(last_successful_fusion_time_);
+    last_fusion_valid_ = has_successful_fusion_;
+    last_mapping_fault_ = has_successful_fusion_ ? "OK" : "NOT_READY";
   }
 
   sensor_msgs::PointCloud2 cloudMessage(const std::vector<Vec3>& points,
@@ -814,6 +818,13 @@ class LocalMappingNode {
     const ros::Time stamp = ros::Time::now();
     const double now = stamp.toSec();
     last_health_result_ = health_monitor_->evaluate(now);
+    const double fusion_timeout =
+        std::min(config_.depth_timeout, config_.odom_timeout);
+    const bool fusion_fresh =
+        has_successful_fusion_ && finite(now) &&
+        finite(last_successful_fusion_time_) &&
+        now >= last_successful_fusion_time_ &&
+        now - last_successful_fusion_time_ <= fusion_timeout;
 
     search_msgs::PerceptionHealth health;
     health.header.stamp = stamp;
@@ -821,13 +832,17 @@ class LocalMappingNode {
     health.depth_healthy = last_health_result_.depth_healthy;
     health.odom_healthy = last_health_result_.odom_healthy;
     health.synchronized = last_health_result_.synchronized;
-    health.map_healthy = last_health_result_.healthy && last_fusion_valid_;
+    health.map_healthy =
+        last_health_result_.healthy && last_fusion_valid_ && fusion_fresh;
     health.valid_depth_ratio = last_health_result_.valid_depth_ratio;
     health.dropped_frames = health_monitor_->droppedFrames();
     health.fault_code = last_health_result_.fault_code;
-    if (!last_fusion_valid_ &&
-        (last_health_result_.healthy ||
-         concreteMappingFault(last_mapping_fault_))) {
+    if (last_health_result_.healthy && last_fusion_valid_ &&
+        has_successful_fusion_ && !fusion_fresh) {
+      health.fault_code = "SYNC_ERROR";
+    } else if (!last_fusion_valid_ &&
+               (last_health_result_.healthy ||
+                concreteMappingFault(last_mapping_fault_))) {
       health.fault_code = last_mapping_fault_;
     }
     health_publisher_.publish(health);
@@ -883,6 +898,8 @@ class LocalMappingNode {
   bool has_reliable_odom_;
   Vec3 latest_odom_position_{0.0, 0.0, 0.0};
   bool last_fusion_valid_;
+  bool has_successful_fusion_;
+  double last_successful_fusion_time_;
   std::string last_mapping_fault_;
   darknet_ros_msgs::BoundingBoxesConstPtr cached_boxes_;
   ros::Time cached_boxes_stamp_;

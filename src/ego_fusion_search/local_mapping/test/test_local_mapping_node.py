@@ -241,6 +241,14 @@ class LocalMappingNodeTest(unittest.TestCase):
             lambda: self._publish_odom(rospy.Time.now()),
         )
 
+    def _keep_depth_and_odom_for(self, seconds):
+        def publish():
+            stamp = rospy.Time.now()
+            self._publish_depth(stamp)
+            self._publish_odom(stamp)
+
+        self._publish_for(seconds, publish)
+
     def _wait_for(self, predicate, message, timeout=4.0):
         deadline = rospy.Time.now() + rospy.Duration(timeout)
         rate = rospy.Rate(100)
@@ -348,6 +356,32 @@ class LocalMappingNodeTest(unittest.TestCase):
         self.assertEqual("map", clearance.header.frame_id)
         self.assertEqual("map", frontier_goal.header.frame_id)
         self.assertAlmostEqual(3.0, frontier_goal.pose.position.z)
+
+        health_stamp = health.header.stamp
+        self._keep_depth_and_odom_for(0.55)
+        self._wait_for(
+            lambda: self._snapshot("_health").header.stamp > health_stamp,
+            "CameraInfo stall did not produce a new health publication",
+            timeout=0.2,
+        )
+        health = self._snapshot("_health")
+        self.assertTrue(
+            health.depth_healthy,
+            "CameraInfo stall incorrectly marked depth unhealthy",
+        )
+        self.assertTrue(
+            health.odom_healthy,
+            "CameraInfo stall incorrectly marked odometry unhealthy",
+        )
+        self.assertTrue(
+            health.synchronized,
+            "CameraInfo stall incorrectly desynchronized depth and odometry",
+        )
+        self.assertFalse(
+            health.map_healthy,
+            "stale fusion stayed healthy after CameraInfo stopped",
+        )
+        self.assertEqual("SYNC_ERROR", health.fault_code)
 
         self._keep_depth_for(0.7)
         self._wait_for(
