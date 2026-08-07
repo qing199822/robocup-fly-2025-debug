@@ -4,13 +4,14 @@ project(local_mapping)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(catkin REQUIRED COMPONENTS darknet_ros_msgs roscpp)
+find_package(catkin REQUIRED COMPONENTS darknet_ros_msgs nav_msgs roscpp)
 find_package(OpenCV REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES local_mapping_health local_mapping_semantic local_mapping_voxel
-  CATKIN_DEPENDS darknet_ros_msgs roscpp
+  LIBRARIES local_mapping_frontier local_mapping_health local_mapping_semantic
+    local_mapping_voxel
+  CATKIN_DEPENDS darknet_ros_msgs nav_msgs roscpp
   DEPENDS OpenCV
 )
 
@@ -25,6 +26,11 @@ target_link_libraries(
   local_mapping_semantic ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
 add_library(local_mapping_voxel src/voxel_map.cpp)
+
+add_library(local_mapping_frontier src/frontier_selector.cpp)
+add_dependencies(local_mapping_frontier ${catkin_EXPORTED_TARGETS})
+target_link_libraries(
+  local_mapping_frontier local_mapping_voxel ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
@@ -44,5 +50,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(voxel_map_test test/voxel_map_test.cpp)
   if(TARGET voxel_map_test)
     target_link_libraries(voxel_map_test local_mapping_voxel)
+  endif()
+  catkin_add_gtest(frontier_selector_test test/frontier_selector_test.cpp)
+  if(TARGET frontier_selector_test)
+    add_dependencies(frontier_selector_test ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(
+      frontier_selector_test local_mapping_frontier ${catkin_LIBRARIES})
   endif()
 endif()
