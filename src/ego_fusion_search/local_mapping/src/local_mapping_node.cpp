@@ -39,6 +39,7 @@
 #include "local_mapping/health_monitor.h"
 #include "local_mapping/integration_rate_limiter.h"
 #include "local_mapping/semantic_depth_filter.h"
+#include "local_mapping/time_rollback_guard.h"
 #include "local_mapping/voxel_map.h"
 
 namespace local_mapping {
@@ -323,9 +324,11 @@ class LocalMappingNode {
     depth_subscriber_.subscribe(node_, config_.depth_topic, 5);
     camera_info_subscriber_.subscribe(node_, config_.camera_info_topic, 5);
     odom_subscriber_.subscribe(node_, config_.odom_topic, 5);
-    synchronizer_.reset(new Synchronizer(
-        SyncPolicy(5), depth_subscriber_, camera_info_subscriber_,
-        odom_subscriber_));
+    SyncPolicy sync_policy(5);
+    sync_policy.setReset(true);
+    synchronizer_.reset(new Synchronizer(sync_policy));
+    synchronizer_->connectInput(depth_subscriber_, camera_info_subscriber_,
+                                odom_subscriber_);
     synchronizer_->registerCallback(boost::bind(
         &LocalMappingNode::synchronizedCallback, this,
         boost::placeholders::_1, boost::placeholders::_2,
@@ -340,6 +343,43 @@ class LocalMappingNode {
   using SyncPolicy = message_filters::sync_policies::ApproximateTime<
       sensor_msgs::Image, sensor_msgs::CameraInfo, nav_msgs::Odometry>;
   using Synchronizer = message_filters::Synchronizer<SyncPolicy>;
+
+  void resetMappingEpoch() {
+    voxel_map_->clear();
+    integration_rate_limiter_->reset();
+    health_monitor_.reset(new HealthMonitor(
+        HealthConfig{config_.max_sync_delta, config_.depth_timeout,
+                     config_.odom_timeout, config_.recovery_window,
+                     config_.min_valid_depth_ratio}));
+    last_health_result_ = HealthResult{};
+    has_reliable_odom_ = false;
+    latest_odom_position_ = Vec3{0.0, 0.0, 0.0};
+    last_fusion_valid_ = false;
+    has_valid_mapping_input_ = false;
+    last_valid_mapping_input_time_ = 0.0;
+    last_mapping_fault_ = "NOT_READY";
+    cached_boxes_.reset();
+    cached_boxes_stamp_ = ros::Time(0);
+    cached_boxes_used_ = false;
+    recent_depth_drop_keys_.clear();
+  }
+
+  bool observeCurrentTime(double now) {
+    if (!time_rollback_guard_.observe(now)) {
+      return false;
+    }
+    resetMappingEpoch();
+    return true;
+  }
+
+  bool stampBelongsToCurrentEpoch(const ros::Time& stamp,
+                                  const ros::Time& now) const {
+    if (!ros::Time::isSimTime()) {
+      return true;
+    }
+    const double future_offset = (stamp - now).toSec();
+    return finite(future_offset) && future_offset <= 0.0;
+  }
 
   bool decodeDepth(const sensor_msgs::ImageConstPtr& message,
                    cv_bridge::CvImageConstPtr* bridge,
@@ -381,6 +421,12 @@ class LocalMappingNode {
   }
 
   void depthHealthCallback(const sensor_msgs::ImageConstPtr& message) {
+    const ros::Time now = ros::Time::now();
+    if (observeCurrentTime(now.toSec()) ||
+        !stampBelongsToCurrentEpoch(message->header.stamp, now)) {
+      health_monitor_->noteDroppedFrame();
+      return;
+    }
     cv_bridge::CvImageConstPtr bridge;
     if (!decodeDepth(message, &bridge, true)) {
       health_monitor_->observeDepth(message->header.stamp.toSec(), 0.0);
@@ -392,14 +438,26 @@ class LocalMappingNode {
   }
 
   void odomHealthCallback(const nav_msgs::OdometryConstPtr& message) {
+    const ros::Time now = ros::Time::now();
+    if (observeCurrentTime(now.toSec()) ||
+        !stampBelongsToCurrentEpoch(message->header.stamp, now)) {
+      health_monitor_->noteDroppedFrame();
+      return;
+    }
     health_monitor_->observeOdom(message->header.stamp.toSec());
   }
 
   void boundingBoxesCallback(
       const darknet_ros_msgs::BoundingBoxesConstPtr& message) {
+    const ros::Time now = ros::Time::now();
     const ros::Time stamp = message->image_header.stamp.isZero()
                                 ? message->header.stamp
                                 : message->image_header.stamp;
+    if (observeCurrentTime(now.toSec()) ||
+        !stampBelongsToCurrentEpoch(stamp, now)) {
+      health_monitor_->noteDroppedFrame();
+      return;
+    }
     if (cached_boxes_) {
       if (stamp < cached_boxes_stamp_) {
         health_monitor_->noteDroppedFrame();
@@ -427,10 +485,9 @@ class LocalMappingNode {
     }
 
     health_monitor_->noteDroppedFrame();
-    if (cached_boxes_stamp_ < depth_stamp) {
-      cached_boxes_.reset();
-      cached_boxes_used_ = false;
-    }
+    cached_boxes_.reset();
+    cached_boxes_stamp_ = ros::Time(0);
+    cached_boxes_used_ = false;
     return {false, {}};
   }
 
@@ -542,6 +599,14 @@ class LocalMappingNode {
       const sensor_msgs::ImageConstPtr& depth_message,
       const sensor_msgs::CameraInfoConstPtr& camera_info,
       const nav_msgs::OdometryConstPtr& odom) {
+    const ros::Time now = ros::Time::now();
+    if (observeCurrentTime(now.toSec()) ||
+        !stampBelongsToCurrentEpoch(depth_message->header.stamp, now) ||
+        !stampBelongsToCurrentEpoch(camera_info->header.stamp, now) ||
+        !stampBelongsToCurrentEpoch(odom->header.stamp, now)) {
+      health_monitor_->noteDroppedFrame();
+      return;
+    }
     last_fusion_valid_ = false;
     const double depth_stamp = depth_message->header.stamp.toSec();
     const double odom_stamp = odom->header.stamp.toSec();
@@ -854,6 +919,7 @@ class LocalMappingNode {
   void publishTimerCallback(const ros::TimerEvent&) {
     const ros::Time stamp = ros::Time::now();
     const double now = stamp.toSec();
+    observeCurrentTime(now);
     last_health_result_ = health_monitor_->evaluate(now);
     const double fusion_timeout =
         std::min(config_.depth_timeout, config_.odom_timeout);
@@ -915,6 +981,7 @@ class LocalMappingNode {
   std::unique_ptr<SemanticDepthFilter> semantic_filter_;
   std::unique_ptr<VoxelMap> voxel_map_;
   std::unique_ptr<FrontierSelector> frontier_selector_;
+  TimeRollbackGuard time_rollback_guard_;
 
   message_filters::Subscriber<sensor_msgs::Image> depth_subscriber_;
   message_filters::Subscriber<sensor_msgs::CameraInfo> camera_info_subscriber_;

@@ -53,6 +53,7 @@ add_library(local_mapping_core
   src/health_monitor.cpp
   src/integration_rate_limiter.cpp
   src/semantic_depth_filter.cpp
+  src/time_rollback_guard.cpp
   src/voxel_map.cpp
   src/frontier_selector.cpp
 )
@@ -79,6 +80,7 @@ if(CATKIN_ENABLE_TESTING)
   foreach(test_target
       health_monitor_test
       integration_rate_limiter_test
+      time_rollback_guard_test
       semantic_depth_filter_test
       voxel_map_test
       frontier_selector_test)
@@ -95,6 +97,7 @@ if(CATKIN_ENABLE_TESTING)
     endif()
   endforeach()
   add_rostest(test/local_mapping_node.test)
+  add_rostest(test/local_mapping_clock_rollback.test)
 endif()
 
 install(TARGETS local_mapping_core local_mapping_node

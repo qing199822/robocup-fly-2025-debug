@@ -144,6 +144,23 @@ TEST(VoxelMap, OldDynamicStampAndClockRollbackDoNotExpireEarly) {
   EXPECT_EQ(CellState::FREE, map.stateAt({2.1, 0.1, 0.1}, 11.1));
 }
 
+TEST(VoxelMap, ClearRemovesStaticAndDynamicCellsAcrossEpochs) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  map.integrateStaticRay({0.1, 0.1, 0.1}, {3.1, 0.1, 0.1});
+  map.integrateDynamicPoint({5.1, 0.1, 0.1}, 100.0);
+  ASSERT_EQ(CellState::FREE, map.stateAt({1.1, 0.1, 0.1}, 100.0));
+  ASSERT_EQ(CellState::OCCUPIED, map.stateAt({3.1, 0.1, 0.1}, 100.0));
+  ASSERT_EQ(CellState::OCCUPIED, map.stateAt({5.1, 0.1, 0.1}, 100.0));
+
+  map.clear();
+
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt({1.1, 0.1, 0.1}, 1.0));
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt({3.1, 0.1, 0.1}, 1.0));
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt({5.1, 0.1, 0.1}, 1.0));
+  EXPECT_TRUE(map.staticOccupiedPoints(1.0).empty());
+  EXPECT_TRUE(map.dynamicOccupiedPoints(1.0).empty());
+}
+
 TEST(VoxelMap, UnknownDirectionIsNeverReportedClear) {
   VoxelMap map(0.5, 2, 2, 1.0);
   const auto clearance =

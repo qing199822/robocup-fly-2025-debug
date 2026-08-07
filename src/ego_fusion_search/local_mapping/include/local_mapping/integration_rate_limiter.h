@@ -9,6 +9,7 @@ class IntegrationRateLimiter {
 
   bool due(double timestamp) const;
   void markIntegrated(double timestamp);
+  void reset();
 
  private:
   double period_;

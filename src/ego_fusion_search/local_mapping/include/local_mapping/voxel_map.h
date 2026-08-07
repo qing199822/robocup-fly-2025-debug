@@ -30,6 +30,7 @@ class VoxelMap {
   void integrateStaticRays(const Vec3& origin,
                            const std::vector<Vec3>& endpoints);
   void integrateDynamicPoint(const Vec3& point, double stamp);
+  void clear();
   CellState stateAt(const Vec3& point, double now) const;
   Clearance axisClearance(const Vec3& origin, const Vec3& unit_axis,
                           double max_distance, double now) const;

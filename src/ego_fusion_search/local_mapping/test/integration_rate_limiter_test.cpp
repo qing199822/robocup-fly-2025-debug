@@ -34,6 +34,15 @@ TEST(IntegrationRateLimiter, ClockRollbackFailsClosed) {
   EXPECT_FALSE(limiter.due(9.9));
 }
 
+TEST(IntegrationRateLimiter, ResetMakesNextFrameDueInNewEpoch) {
+  IntegrationRateLimiter limiter(5.0);
+  limiter.markIntegrated(100.0);
+
+  limiter.reset();
+
+  EXPECT_TRUE(limiter.due(1.0));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

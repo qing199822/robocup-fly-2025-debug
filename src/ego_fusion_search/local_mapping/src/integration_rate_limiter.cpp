@@ -47,4 +47,9 @@ void IntegrationRateLimiter::markIntegrated(double timestamp) {
   last_integration_timestamp_ = timestamp;
 }
 
+void IntegrationRateLimiter::reset() {
+  has_integration_ = false;
+  last_integration_timestamp_ = 0.0;
+}
+
 }  // namespace local_mapping

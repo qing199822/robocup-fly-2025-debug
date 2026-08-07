@@ -186,6 +186,11 @@ void VoxelMap::integrateDynamicPoint(const Vec3& point, double stamp) {
   }
 }
 
+void VoxelMap::clear() {
+  static_cells_.clear();
+  dynamic_cells_.clear();
+}
+
 CellState VoxelMap::staticState(const Key& key) const {
   const auto found = static_cells_.find(key);
   if (found == static_cells_.end()) {
