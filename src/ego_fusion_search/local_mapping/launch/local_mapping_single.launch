@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="depth_topic"
+       default="/typhoon_h480_0/realsense/depth_camera/depth/image_raw"/>
+  <arg name="camera_info_topic"
+       default="/typhoon_h480_0/realsense/depth_camera/depth/camera_info"/>
+  <arg name="odom_topic" default="/typhoon_h480_0/global_odom"/>
+  <arg name="bounding_boxes_topic"
+       default="/typhoon_h480_0/yolo11n/bounding_boxes"/>
+
+  <node pkg="local_mapping" type="local_mapping_node"
+        name="local_mapping_typhoon_h480_0" required="true" output="screen">
+    <rosparam command="load"
+              file="$(find local_mapping)/config/single_drone.yaml"/>
+    <param name="depth_topic" value="$(arg depth_topic)"/>
+    <param name="camera_info_topic" value="$(arg camera_info_topic)"/>
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+    <param name="bounding_boxes_topic" value="$(arg bounding_boxes_topic)"/>
+  </node>
+</launch>
