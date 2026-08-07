@@ -109,6 +109,8 @@ git remote -v
 | `src/look_up` | 目标查询服务和 `down_resume` 总任务 launch |
 | `src/tracking` | 目标跟踪状态机、滤波、平滑和控制命令 |
 | `src/ego_fusion_search/safety_filter` | 最终速度看门狗、限幅和发布者唯一性边界 |
+| `src/ego_fusion_search/search_msgs` | 队伍局部地图健康与净空度消息 |
+| `src/ego_fusion_search/local_mapping` | 0 号机深度同步、人物语义过滤、局部体素地图、健康、净空度与前沿候选输出；尚未接入 EGO 或控制链 |
 | `src/transform_tree` | 队伍需要的动态 TF 发布 |
 | `src/yolo` | 六路检测、深度与 CameraInfo 匹配、三维坐标解算 |
 | `waypoint` | 可见任务入口、地图和路线辅助数据；`mission_down.json` 是指向包内权威文件的链接 |
@@ -683,3 +685,37 @@ git ls-remote --heads public competition-clean
 ### 当前安全结论
 
 人物连续广播 15 秒、完成目标并恢复巡逻的功能已有自动化和真实六机证据，但本次整体运行仍为失败：4、5 号机出现约 485–489 米异常高度，5 号机撞 `house_3_68` 并接触地面；上一轮确认的 4/5 号机动态碰撞、2 号机撞 `house_3_156` 和 0 号机无航点进度也尚未全部闭合。禁止把 `competition-clean` 描述为全航程安全或比赛就绪。
+
+## 2026-08-07 局部地图基础链真实 Gazebo 检查
+
+### 范围与运行方式
+
+- 验收时代码基线为 `d0b640ed0665a84fee56b00046f10bb3ddb7f8d4`（`test: add single-drone mapping contract checker`）。
+- 主环境使用 `bash 1.sh 6 mission_down.json` 启动，完整日志为 `logs/competition-clean/launch-20260807-202341-BwUXbC.log`。
+- 另一终端使用 `roslaunch local_mapping local_mapping_single.launch vehicle_type:=typhoon_h480 drone_id:=0` 只启动 `typhoon_h480_0` 的 `local_mapping` 节点，其他五架无人机没有启动局部地图节点。
+- 这是“六机比赛场景中只运行 0 号机局部地图”的检查，不是独立纯单机 Gazebo 场景，也不是连续 5 次完整单机验收。
+
+### 30 秒合同检查结果
+
+本次 `scripts/check_local_mapping_single.py --vehicle typhoon_h480_0 --duration 30` 的总结论为 **FAIL**，不能记为第一阶段通过：
+
+- `health`、`static_cloud`、`dynamic_cloud` 的墙钟接收速率约为 3.658–3.659 Hz，低于合同要求的 5.0 Hz。
+- 三类输出的墙钟最大消息间隔约为 0.382–0.384 秒，超过 0.250 秒上限。
+- ROS 仿真时间下的话题频率稳定为 5.000 Hz，Gazebo 实时因子约为 0.63–0.73。这能解释为什么按 ROS 时间的 5 Hz 定时器在墙钟观测中只有约 3.66 Hz，但不改变合同检查失败的结论。
+
+基础功能链同时给出了可用证据：
+
+- 四项健康标志均为 `true`，`fault_code` 为 `OK`。
+- 深度图和 `CameraInfo` 来自 Gazebo，`global_odom` 来自 `multi_drone_pose_transformer`，人物检测框来自 `yolo11n`，四类输入均已连通。
+- `planner_depth` 有唯一发布者，实际消息坐标系为传感器坐标系 `depth_camera_base`；`health`、`static_cloud`、`dynamic_cloud`、`clearance` 的输出坐标系为 `map`。
+- `local_mapping` 未发布控制话题。
+
+因此，当前只能说“六机环境中 0 号机局部地图基础功能链健康，但墙钟性能验收失败”。EGO 轨迹接入、静态障碍绕行、故障注入和《单机局部建图与障碍导航设计》第一阶段完整验收都尚未完成。
+
+`LOCAL_MAPPING_NAVIGATION_DESIGN.md` 页首的“尚未实现”是第一阶段整体状态，且成文早于本次局部地图实现。后续 Agent 判断实现进度时以本节为准：局部地图基础已实现并取得上述六机环境证据，但该设计文档定义的完整第一阶段仍未通过。
+
+### 停止与清理
+
+- 单独启动的 `local_mapping` 正常退出；主启动器 `1.sh` 按 `Ctrl-C` 后退出码为 130。
+- 停止后，本次 Gazebo、PX4、`roslaunch`、MAVROS 和 XTDrone 通信相关进程均无残留，本次临时目录无残留，XTDrone 工作树状态为空。
+- 原始 `~/.ros` 日志只作本机诊断证据，不得提交到仓库。
