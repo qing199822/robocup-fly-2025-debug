@@ -339,6 +339,17 @@ TEST(VoxelMap, RejectsDiagonalUnitClearanceAxis) {
                std::invalid_argument);
 }
 
+TEST(VoxelMap, RejectsAnyNonzeroSecondaryClearanceAxisComponent) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+
+  for (const double secondary : {1e-6, 1e-12}) {
+    SCOPED_TRACE(secondary);
+    EXPECT_THROW(map.axisClearance({0.0, 0.0, 0.0},
+                                   {1.0, secondary, 0.0}, 0.0, 0.0),
+                 std::invalid_argument);
+  }
+}
+
 TEST(VoxelMap, RejectsCoordinatesOutsideRepresentableVoxelKeys) {
   VoxelMap map(1.0, 1, 1, 1.0);
   const double huge = std::numeric_limits<double>::max();

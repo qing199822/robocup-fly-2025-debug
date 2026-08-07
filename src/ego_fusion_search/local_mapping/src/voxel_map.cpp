@@ -9,8 +9,6 @@
 namespace local_mapping {
 namespace {
 
-constexpr long double kAxisTolerance = 1e-6L;
-
 bool isFinite(const Vec3& point) {
   return std::isfinite(point.x) && std::isfinite(point.y) &&
          std::isfinite(point.z);
@@ -226,25 +224,16 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
     throw std::invalid_argument("invalid clearance query");
   }
 
-  const long double axis_length = std::sqrt(
-      static_cast<long double>(unit_axis.x) * unit_axis.x +
-      static_cast<long double>(unit_axis.y) * unit_axis.y +
-      static_cast<long double>(unit_axis.z) * unit_axis.z);
-  const auto nearZero = [](double component) {
-    return std::fabs(static_cast<long double>(component)) <= kAxisTolerance;
-  };
-  const auto nearUnit = [](double component) {
-    return std::fabs(std::fabs(static_cast<long double>(component)) - 1.0L) <=
-           kAxisTolerance;
-  };
   const bool x_axis =
-      nearUnit(unit_axis.x) && nearZero(unit_axis.y) && nearZero(unit_axis.z);
+      (unit_axis.x == 1.0 || unit_axis.x == -1.0) && unit_axis.y == 0.0 &&
+      unit_axis.z == 0.0;
   const bool y_axis =
-      nearZero(unit_axis.x) && nearUnit(unit_axis.y) && nearZero(unit_axis.z);
+      unit_axis.x == 0.0 &&
+      (unit_axis.y == 1.0 || unit_axis.y == -1.0) && unit_axis.z == 0.0;
   const bool z_axis =
-      nearZero(unit_axis.x) && nearZero(unit_axis.y) && nearUnit(unit_axis.z);
-  if (std::fabs(axis_length - 1.0L) > kAxisTolerance ||
-      !(x_axis || y_axis || z_axis)) {
+      unit_axis.x == 0.0 && unit_axis.y == 0.0 &&
+      (unit_axis.z == 1.0 || unit_axis.z == -1.0);
+  if (!(x_axis || y_axis || z_axis)) {
     throw std::invalid_argument(
         "clearance axis must be an axis-aligned unit vector");
   }
