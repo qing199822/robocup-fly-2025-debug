@@ -27,6 +27,8 @@ class VoxelMap {
            double dynamic_ttl);
 
   void integrateStaticRay(const Vec3& origin, const Vec3& endpoint);
+  void integrateStaticRays(const Vec3& origin,
+                           const std::vector<Vec3>& endpoints);
   void integrateDynamicPoint(const Vec3& point, double stamp);
   CellState stateAt(const Vec3& point, double now) const;
   Clearance axisClearance(const Vec3& origin, const Vec3& unit_axis,
@@ -41,6 +43,11 @@ class VoxelMap {
     std::int64_t z;
 
     bool operator<(const Key& other) const;
+    bool operator==(const Key& other) const;
+  };
+
+  struct KeyHash {
+    std::size_t operator()(const Key& key) const;
   };
 
   struct Evidence {

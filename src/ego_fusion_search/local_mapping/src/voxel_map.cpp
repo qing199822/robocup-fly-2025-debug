@@ -5,6 +5,8 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace local_mapping {
 namespace {
@@ -30,6 +32,19 @@ bool VoxelMap::Key::operator<(const Key& other) const {
     return y < other.y;
   }
   return z < other.z;
+}
+
+bool VoxelMap::Key::operator==(const Key& other) const {
+  return x == other.x && y == other.y && z == other.z;
+}
+
+std::size_t VoxelMap::KeyHash::operator()(const Key& key) const {
+  std::size_t result = std::hash<std::int64_t>{}(key.x);
+  result ^= std::hash<std::int64_t>{}(key.y) + 0x9e3779b9u +
+            (result << 6u) + (result >> 2u);
+  result ^= std::hash<std::int64_t>{}(key.z) + 0x9e3779b9u +
+            (result << 6u) + (result >> 2u);
+  return result;
 }
 
 VoxelMap::VoxelMap(double resolution, int occupied_hits, int free_hits,
@@ -103,31 +118,49 @@ std::size_t VoxelMap::sampleCount(long double distance) const {
 
 void VoxelMap::integrateStaticRay(const Vec3& origin,
                                   const Vec3& endpoint) {
-  const Key endpoint_key = keyFor(endpoint);
+  integrateStaticRays(origin, {endpoint});
+}
+
+void VoxelMap::integrateStaticRays(const Vec3& origin,
+                                   const std::vector<Vec3>& endpoints) {
   keyFor(origin);
 
-  const long double dx = static_cast<long double>(endpoint.x) - origin.x;
-  const long double dy = static_cast<long double>(endpoint.y) - origin.y;
-  const long double dz = static_cast<long double>(endpoint.z) - origin.z;
-  const long double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-  const std::size_t samples = sampleCount(distance);
+  std::unordered_map<Key, Vec3, KeyHash> unique_endpoints;
+  unique_endpoints.reserve(endpoints.size());
+  for (const auto& endpoint : endpoints) {
+    unique_endpoints.emplace(keyFor(endpoint), endpoint);
+  }
 
-  std::set<Key> free_keys;
-  if (samples > 0u) {
-    for (std::size_t index = 0; index < samples; ++index) {
-      const long double fraction =
-          static_cast<long double>(index) / samples;
-      const Vec3 sample{
-          static_cast<double>(static_cast<long double>(origin.x) +
-                              fraction * dx),
-          static_cast<double>(static_cast<long double>(origin.y) +
-                              fraction * dy),
-          static_cast<double>(static_cast<long double>(origin.z) +
-                              fraction * dz)};
-      const Key key = keyFor(sample);
-      if (key.x != endpoint_key.x || key.y != endpoint_key.y ||
-          key.z != endpoint_key.z) {
-        free_keys.insert(key);
+  std::unordered_set<Key, KeyHash> occupied_keys;
+  occupied_keys.reserve(unique_endpoints.size());
+  for (const auto& endpoint : unique_endpoints) {
+    occupied_keys.insert(endpoint.first);
+  }
+
+  std::unordered_set<Key, KeyHash> free_keys;
+  for (const auto& endpoint_entry : unique_endpoints) {
+    const Vec3& endpoint = endpoint_entry.second;
+    const long double dx = static_cast<long double>(endpoint.x) - origin.x;
+    const long double dy = static_cast<long double>(endpoint.y) - origin.y;
+    const long double dz = static_cast<long double>(endpoint.z) - origin.z;
+    const long double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const std::size_t samples = sampleCount(distance);
+
+    if (samples > 0u) {
+      for (std::size_t index = 0; index < samples; ++index) {
+        const long double fraction =
+            static_cast<long double>(index) / samples;
+        const Vec3 sample{
+            static_cast<double>(static_cast<long double>(origin.x) +
+                                fraction * dx),
+            static_cast<double>(static_cast<long double>(origin.y) +
+                                fraction * dy),
+            static_cast<double>(static_cast<long double>(origin.z) +
+                                fraction * dz)};
+        const Key key = keyFor(sample);
+        if (occupied_keys.count(key) == 0u) {
+          free_keys.insert(key);
+        }
       }
     }
   }
@@ -135,7 +168,9 @@ void VoxelMap::integrateStaticRay(const Vec3& origin,
   for (const auto& key : free_keys) {
     incrementSaturated(&static_cells_[key].free);
   }
-  incrementSaturated(&static_cells_[endpoint_key].occupied);
+  for (const auto& key : occupied_keys) {
+    incrementSaturated(&static_cells_[key].occupied);
+  }
 }
 
 void VoxelMap::integrateDynamicPoint(const Vec3& point, double stamp) {

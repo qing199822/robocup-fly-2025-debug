@@ -38,6 +38,62 @@ TEST(VoxelMap, StaticEvidenceNeedsThresholdAndOneRayCountsEachVoxelOnce) {
   EXPECT_EQ(CellState::UNKNOWN, map.stateAt({8.1, 0.1, 0.1}, 0.0));
 }
 
+TEST(VoxelMap, BatchCountsDuplicateEndpointVoxelOncePerFrame) {
+  VoxelMap map(1.0, 2, 2, 1.0);
+  const Vec3 origin{0.1, 0.1, 0.1};
+  const std::vector<Vec3> endpoints{{3.1, 0.1, 0.1},
+                                    {3.2, 0.2, 0.2},
+                                    {3.9, 0.9, 0.9}};
+
+  map.integrateStaticRays(origin, endpoints);
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt({3.5, 0.5, 0.5}, 0.0));
+
+  map.integrateStaticRays(origin, endpoints);
+  EXPECT_EQ(CellState::OCCUPIED, map.stateAt({3.5, 0.5, 0.5}, 0.0));
+}
+
+TEST(VoxelMap, BatchCountsSharedFreeVoxelOncePerFrame) {
+  VoxelMap map(1.0, 1, 2, 1.0);
+  const Vec3 origin{0.1, 0.1, 0.1};
+  const std::vector<Vec3> endpoints{{3.1, 0.1, 0.1},
+                                    {3.1, 1.1, 0.1}};
+
+  map.integrateStaticRays(origin, endpoints);
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt(origin, 0.0));
+
+  map.integrateStaticRays(origin, endpoints);
+  EXPECT_EQ(CellState::FREE, map.stateAt(origin, 0.0));
+}
+
+TEST(VoxelMap, BatchOccupiedEndpointTakesPriorityOverFreeEvidence) {
+  VoxelMap map(1.0, 2, 1, 1.0);
+  const Vec3 origin{0.1, 0.1, 0.1};
+  const std::vector<Vec3> endpoints{{1.1, 0.1, 0.1},
+                                    {3.1, 0.1, 0.1}};
+
+  map.integrateStaticRays(origin, endpoints);
+  EXPECT_EQ(CellState::UNKNOWN, map.stateAt({1.1, 0.1, 0.1}, 0.0));
+
+  map.integrateStaticRays(origin, {{1.1, 0.1, 0.1}});
+  EXPECT_EQ(CellState::OCCUPIED, map.stateAt({1.1, 0.1, 0.1}, 0.0));
+}
+
+TEST(VoxelMap, SingleRayApiRemainsCompatibleWithOneEndpointBatch) {
+  VoxelMap single_ray_map(1.0, 1, 1, 1.0);
+  VoxelMap batch_map(1.0, 1, 1, 1.0);
+  const Vec3 origin{0.1, 0.1, 0.1};
+  const Vec3 endpoint{3.1, 0.1, 0.1};
+
+  single_ray_map.integrateStaticRay(origin, endpoint);
+  batch_map.integrateStaticRays(origin, {endpoint});
+
+  for (const Vec3& point : std::vector<Vec3>{
+           {0.1, 0.1, 0.1}, {1.1, 0.1, 0.1}, {2.1, 0.1, 0.1}, endpoint}) {
+    EXPECT_EQ(single_ray_map.stateAt(point, 0.0),
+              batch_map.stateAt(point, 0.0));
+  }
+}
+
 TEST(VoxelMap, OriginAndEndpointInOneVoxelOnlyAddOccupiedEvidence) {
   VoxelMap map(1.0, 2, 1, 1.0);
   map.integrateStaticRay({0.1, 0.1, 0.1}, {0.9, 0.9, 0.9});

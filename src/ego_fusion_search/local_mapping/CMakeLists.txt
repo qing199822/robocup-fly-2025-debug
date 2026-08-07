@@ -51,6 +51,7 @@ include_directories(
 
 add_library(local_mapping_core
   src/health_monitor.cpp
+  src/integration_rate_limiter.cpp
   src/semantic_depth_filter.cpp
   src/voxel_map.cpp
   src/frontier_selector.cpp
@@ -77,6 +78,7 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   foreach(test_target
       health_monitor_test
+      integration_rate_limiter_test
       semantic_depth_filter_test
       voxel_map_test
       frontier_selector_test)

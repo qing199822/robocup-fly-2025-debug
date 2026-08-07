@@ -208,8 +208,10 @@ class LocalMappingNodeTest(unittest.TestCase):
         odom_child="base_link",
         boxes="person",
         boxes_stamp=None,
+        stamp=None,
     ):
-        stamp = rospy.Time.now()
+        if stamp is None:
+            stamp = rospy.Time.now()
         if boxes is not None:
             self._publish_boxes(
                 stamp if boxes_stamp is None else boxes_stamp,
@@ -223,6 +225,18 @@ class LocalMappingNodeTest(unittest.TestCase):
         self._camera_info_pub.publish(camera_info)
         self._odom_pub.publish(odom)
         return stamp
+
+    def _prime_box_cache(self, stamp, include_person=True):
+        dropped_before = self._snapshot("_health").dropped_frames
+        deadline = rospy.Time.now() + rospy.Duration(1.0)
+        rate = rospy.Rate(100)
+        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            self._publish_boxes(stamp, include_person=include_person)
+            health = self._snapshot("_health")
+            if health.dropped_frames > dropped_before:
+                return
+            rate.sleep()
+        self.fail("BoundingBoxes cache did not acknowledge the test stamp")
 
     def _publish_for(self, seconds, publisher):
         deadline = rospy.Time.now() + rospy.Duration(seconds)
@@ -303,7 +317,9 @@ class LocalMappingNodeTest(unittest.TestCase):
     def _assert_frame_error(self, message, **kwargs):
         planner_stamp = self._snapshot("_planner_depth").header.stamp
         dynamic_points = self._cloud_points("_dynamic_cloud")
-        self._publish_synchronized_inputs(**kwargs)
+        stamp = rospy.Time.now()
+        self._prime_box_cache(stamp)
+        self._publish_synchronized_inputs(stamp=stamp, boxes=None, **kwargs)
         self._wait_for_mapping_publications_after_planner(
             planner_stamp, message
         )

@@ -37,6 +37,7 @@
 
 #include "local_mapping/frontier_selector.h"
 #include "local_mapping/health_monitor.h"
+#include "local_mapping/integration_rate_limiter.h"
 #include "local_mapping/semantic_depth_filter.h"
 #include "local_mapping/voxel_map.h"
 
@@ -45,6 +46,7 @@ namespace {
 
 constexpr char kMapFrame[] = "map";
 constexpr std::size_t kRecentDepthDropCapacity = 64;
+constexpr double kMaxIntegrationRateHz = 5.0;
 
 struct DepthMessageKey {
   std::uint32_t sequence;
@@ -278,8 +280,8 @@ class LocalMappingNode {
         tf_listener_(tf_buffer_),
         has_reliable_odom_(false),
         last_fusion_valid_(false),
-        has_successful_fusion_(false),
-        last_successful_fusion_time_(0.0),
+        has_valid_mapping_input_(false),
+        last_valid_mapping_input_time_(0.0),
         last_mapping_fault_("NOT_READY"),
         cached_boxes_used_(false) {
     validateConfig(config_);
@@ -292,6 +294,9 @@ class LocalMappingNode {
     voxel_map_.reset(new VoxelMap(config_.voxel_resolution,
                                   config_.occupied_hits, config_.free_hits,
                                   config_.dynamic_ttl));
+    integration_rate_limiter_.reset(
+        new IntegrationRateLimiter(
+            std::min(config_.publish_rate, kMaxIntegrationRateHz)));
     frontier_selector_.reset(new FrontierSelector(
         config_.min_frontier_cluster_cells, config_.max_frontier_distance));
 
@@ -634,6 +639,16 @@ class LocalMappingNode {
     const double fy = camera_info->K[4];
     const double cx = camera_info->K[2];
     const double cy = camera_info->K[5];
+    std::vector<Vec3> static_endpoints;
+    std::vector<Vec3> dynamic_points;
+    const std::size_t sampled_rows =
+        (static_cast<std::size_t>(depth.rows) + config_.pixel_stride - 1u) /
+        static_cast<std::size_t>(config_.pixel_stride);
+    const std::size_t sampled_columns =
+        (static_cast<std::size_t>(depth.cols) + config_.pixel_stride - 1u) /
+        static_cast<std::size_t>(config_.pixel_stride);
+    static_endpoints.reserve(sampled_rows * sampled_columns);
+    dynamic_points.reserve(sampled_rows * sampled_columns);
     try {
       for (int row = 0; row < depth.rows; row += config_.pixel_stride) {
         for (int column = 0; column < depth.cols;
@@ -652,16 +667,30 @@ class LocalMappingNode {
             throw std::invalid_argument("transformed depth point is invalid");
           }
           if (filtered.person_mask.at<std::uint8_t>(row, column) != 0u) {
-            voxel_map_->integrateDynamicPoint(map_point, depth_stamp);
+            dynamic_points.push_back(map_point);
           } else {
             double static_metres = 0.0;
             if (depthAt(filtered.static_depth, row, column,
                         &static_metres)) {
-              voxel_map_->integrateStaticRay(camera_origin, map_point);
+              static_endpoints.push_back(map_point);
             }
           }
         }
       }
+
+      const double mapping_input_time = ros::Time::now().toSec();
+      if (!finite(mapping_input_time)) {
+        throw std::invalid_argument("mapping input time is invalid");
+      }
+      if (integration_rate_limiter_->due(mapping_input_time)) {
+        voxel_map_->integrateStaticRays(camera_origin, static_endpoints);
+        for (const auto& point : dynamic_points) {
+          voxel_map_->integrateDynamicPoint(point, depth_stamp);
+        }
+        integration_rate_limiter_->markIntegrated(mapping_input_time);
+      }
+      last_valid_mapping_input_time_ = mapping_input_time;
+      has_valid_mapping_input_ = true;
     } catch (const std::exception& error) {
       ROS_WARN_THROTTLE(1.0, "local mapping integration failed: %s",
                         error.what());
@@ -670,10 +699,8 @@ class LocalMappingNode {
       return;
     }
 
-    last_successful_fusion_time_ = ros::Time::now().toSec();
-    has_successful_fusion_ = finite(last_successful_fusion_time_);
-    last_fusion_valid_ = has_successful_fusion_;
-    last_mapping_fault_ = has_successful_fusion_ ? "OK" : "NOT_READY";
+    last_fusion_valid_ = has_valid_mapping_input_;
+    last_mapping_fault_ = has_valid_mapping_input_ ? "OK" : "NOT_READY";
   }
 
   sensor_msgs::PointCloud2 cloudMessage(const std::vector<Vec3>& points,
@@ -831,10 +858,10 @@ class LocalMappingNode {
     const double fusion_timeout =
         std::min(config_.depth_timeout, config_.odom_timeout);
     const bool fusion_fresh =
-        has_successful_fusion_ && finite(now) &&
-        finite(last_successful_fusion_time_) &&
-        now >= last_successful_fusion_time_ &&
-        now - last_successful_fusion_time_ <= fusion_timeout;
+        has_valid_mapping_input_ && finite(now) &&
+        finite(last_valid_mapping_input_time_) &&
+        now >= last_valid_mapping_input_time_ &&
+        now - last_valid_mapping_input_time_ <= fusion_timeout;
 
     search_msgs::PerceptionHealth health;
     health.header.stamp = stamp;
@@ -848,7 +875,7 @@ class LocalMappingNode {
     health.dropped_frames = health_monitor_->droppedFrames();
     health.fault_code = last_health_result_.fault_code;
     if (last_health_result_.healthy && last_fusion_valid_ &&
-        has_successful_fusion_ && !fusion_fresh) {
+        has_valid_mapping_input_ && !fusion_fresh) {
       health.fault_code = "SYNC_ERROR";
     } else if (!last_fusion_valid_ &&
                (last_health_result_.healthy ||
@@ -884,6 +911,7 @@ class LocalMappingNode {
   tf2_ros::TransformListener tf_listener_;
 
   std::unique_ptr<HealthMonitor> health_monitor_;
+  std::unique_ptr<IntegrationRateLimiter> integration_rate_limiter_;
   std::unique_ptr<SemanticDepthFilter> semantic_filter_;
   std::unique_ptr<VoxelMap> voxel_map_;
   std::unique_ptr<FrontierSelector> frontier_selector_;
@@ -908,8 +936,8 @@ class LocalMappingNode {
   bool has_reliable_odom_;
   Vec3 latest_odom_position_{0.0, 0.0, 0.0};
   bool last_fusion_valid_;
-  bool has_successful_fusion_;
-  double last_successful_fusion_time_;
+  bool has_valid_mapping_input_;
+  double last_valid_mapping_input_time_;
   std::string last_mapping_fault_;
   darknet_ros_msgs::BoundingBoxesConstPtr cached_boxes_;
   ros::Time cached_boxes_stamp_;
