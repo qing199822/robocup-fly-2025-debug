@@ -691,13 +691,42 @@ git ls-remote --heads public competition-clean
 ### 范围与运行方式
 
 - 验收时代码基线为 `d0b640ed0665a84fee56b00046f10bb3ddb7f8d4`（`test: add single-drone mapping contract checker`）。
-- 主环境使用 `bash 1.sh 6 mission_down.json` 启动，完整日志为 `logs/competition-clean/launch-20260807-202341-BwUXbC.log`。
-- 另一终端使用 `roslaunch local_mapping local_mapping_single.launch vehicle_type:=typhoon_h480 drone_id:=0` 只启动 `typhoon_h480_0` 的 `local_mapping` 节点，其他五架无人机没有启动局部地图节点。
 - 这是“六机比赛场景中只运行 0 号机局部地图”的检查，不是独立纯单机 Gazebo 场景，也不是连续 5 次完整单机验收。
+
+在图形桌面终端 A 启动六机主环境：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY-competition-clean
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+bash 1.sh 6 mission_down.json
+```
+
+等待终端 A 报告六路相机和任务链就绪后，在终端 B 只启动 `typhoon_h480_0` 的 `local_mapping` 节点：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY-competition-clean
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+roslaunch local_mapping local_mapping_single.launch \
+  vehicle_type:=typhoon_h480 drone_id:=0
+```
+
+其他五架无人机不启动局部地图节点。本次六机主环境的完整日志为 `logs/competition-clean/launch-20260807-202341-BwUXbC.log`。
 
 ### 30 秒合同检查结果
 
-本次 `scripts/check_local_mapping_single.py --vehicle typhoon_h480_0 --duration 30` 的总结论为 **FAIL**，不能记为第一阶段通过：
+终端 B 的局部地图节点就绪后，在终端 C 运行 30 秒合同检查：
+
+```bash
+cd ~/robocup_fly/2025_ZZU_FLY-competition-clean
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+python3 scripts/check_local_mapping_single.py \
+  --vehicle typhoon_h480_0 --duration 30
+```
+
+本次检查的总结论为 **FAIL**，不能记为第一阶段通过：
 
 - `health`、`static_cloud`、`dynamic_cloud` 的墙钟接收速率约为 3.658–3.659 Hz，低于合同要求的 5.0 Hz。
 - 三类输出的墙钟最大消息间隔约为 0.382–0.384 秒，超过 0.250 秒上限。
