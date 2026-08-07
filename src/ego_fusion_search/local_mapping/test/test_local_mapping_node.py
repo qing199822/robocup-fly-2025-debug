@@ -11,6 +11,7 @@ from darknet_ros_msgs.msg import BoundingBox, BoundingBoxes
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from search_msgs.msg import LocalClearance, PerceptionHealth
+from sensor_msgs import point_cloud2
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
 
@@ -108,18 +109,22 @@ class LocalMappingNodeTest(unittest.TestCase):
         with self._lock:
             return getattr(self, attribute)
 
-    def _publish_odom(self, stamp):
+    def _make_odom(self, stamp, parent_frame="map", child_frame="base_link"):
         odom = Odometry()
         odom.header.stamp = stamp
-        odom.header.frame_id = "map"
-        odom.child_frame_id = "base_link"
+        odom.header.frame_id = parent_frame
+        odom.child_frame_id = child_frame
         odom.pose.pose.position.z = 3.0
         odom.pose.pose.orientation.w = 1.0
+        return odom
+
+    def _publish_odom(
+        self, stamp, parent_frame="map", child_frame="base_link"
+    ):
+        odom = self._make_odom(stamp, parent_frame, child_frame)
         self._odom_pub.publish(odom)
 
-    def _publish_synchronized_inputs(self):
-        stamp = rospy.Time.now()
-
+    def _publish_boxes(self, stamp):
         boxes = BoundingBoxes()
         boxes.header.stamp = stamp
         boxes.image_header.stamp = stamp
@@ -133,21 +138,33 @@ class LocalMappingNodeTest(unittest.TestCase):
         boxes.bounding_boxes = [person]
         self._boxes_pub.publish(boxes)
 
+    def _make_depth(
+        self,
+        stamp,
+        depth_mm=2000,
+        frame="test_camera",
+        encoding="16UC1",
+        sequence=0,
+    ):
         depth = Image()
+        depth.header.seq = sequence
         depth.header.stamp = stamp
-        depth.header.frame_id = "test_camera"
+        depth.header.frame_id = frame
         depth.height = self.HEIGHT
         depth.width = self.WIDTH
-        depth.encoding = "16UC1"
+        depth.encoding = encoding
         depth.is_bigendian = False
         depth.step = self.WIDTH * 2
         depth.data = struct.pack(
             "<{}H".format(self.WIDTH * self.HEIGHT),
-            *([2000] * (self.WIDTH * self.HEIGHT))
+            *([depth_mm] * (self.WIDTH * self.HEIGHT))
         )
+        return depth
 
+    def _make_camera_info(self, stamp, frame="test_camera"):
         camera_info = CameraInfo()
-        camera_info.header = depth.header
+        camera_info.header.stamp = stamp
+        camera_info.header.frame_id = frame
         camera_info.height = self.HEIGHT
         camera_info.width = self.WIDTH
         camera_info.K = [
@@ -161,24 +178,68 @@ class LocalMappingNodeTest(unittest.TestCase):
             0.0,
             1.0,
         ]
+        return camera_info
+
+    def _publish_depth(
+        self,
+        stamp,
+        depth_mm=2000,
+        frame="test_camera",
+        encoding="16UC1",
+        sequence=0,
+    ):
+        self._depth_pub.publish(
+            self._make_depth(
+                stamp, depth_mm, frame, encoding, sequence
+            )
+        )
+
+    def _publish_camera_info_and_odom(self, stamp):
+        self._camera_info_pub.publish(self._make_camera_info(stamp))
+        self._odom_pub.publish(self._make_odom(stamp))
+
+    def _publish_synchronized_inputs(
+        self,
+        depth_mm=2000,
+        depth_frame="test_camera",
+        info_frame="test_camera",
+        odom_parent="map",
+        odom_child="base_link",
+    ):
+        stamp = rospy.Time.now()
+        self._publish_boxes(stamp)
+        depth = self._make_depth(stamp, depth_mm, depth_frame)
+        camera_info = self._make_camera_info(stamp, info_frame)
+        odom = self._make_odom(stamp, odom_parent, odom_child)
 
         self._depth_pub.publish(depth)
         self._camera_info_pub.publish(camera_info)
-        self._publish_odom(stamp)
+        self._odom_pub.publish(odom)
+        return stamp
 
-    def _publish_inputs_for(self, seconds):
+    def _publish_for(self, seconds, publisher):
         deadline = rospy.Time.now() + rospy.Duration(seconds)
         rate = rospy.Rate(30)
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
-            self._publish_synchronized_inputs()
+            publisher()
             rate.sleep()
+
+    def _publish_inputs_for(self, seconds, **kwargs):
+        self._publish_for(
+            seconds, lambda: self._publish_synchronized_inputs(**kwargs)
+        )
+
+    def _keep_depth_for(self, seconds):
+        self._publish_for(
+            seconds,
+            lambda: self._publish_depth(rospy.Time.now()),
+        )
 
     def _keep_odom_for(self, seconds):
-        deadline = rospy.Time.now() + rospy.Duration(seconds)
-        rate = rospy.Rate(30)
-        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
-            self._publish_odom(rospy.Time.now())
-            rate.sleep()
+        self._publish_for(
+            seconds,
+            lambda: self._publish_odom(rospy.Time.now()),
+        )
 
     def _wait_for(self, predicate, message, timeout=4.0):
         deadline = rospy.Time.now() + rospy.Duration(timeout)
@@ -188,6 +249,56 @@ class LocalMappingNodeTest(unittest.TestCase):
                 return
             rate.sleep()
         self.fail(message)
+
+    def _wait_for_mapping_publications_after_planner(
+        self, planner_stamp, message
+    ):
+        self._wait_for(
+            lambda: self._snapshot("_planner_depth") is not None
+            and self._snapshot("_planner_depth").header.stamp > planner_stamp,
+            message + " did not reach the synchronized callback",
+        )
+        health_stamp = self._snapshot("_health").header.stamp
+        static_stamp = self._snapshot("_static_cloud").header.stamp
+        dynamic_stamp = self._snapshot("_dynamic_cloud").header.stamp
+        self._wait_for(
+            lambda: self._snapshot("_health").header.stamp > health_stamp,
+            message + " did not produce a new health publication",
+        )
+        self._wait_for(
+            lambda: self._snapshot("_static_cloud").header.stamp
+            > static_stamp,
+            message + " did not produce a new static cloud publication",
+        )
+        self._wait_for(
+            lambda: self._snapshot("_dynamic_cloud").header.stamp
+            > dynamic_stamp,
+            message + " did not produce a new dynamic cloud publication",
+        )
+
+    def _cloud_points(self, attribute):
+        return set(
+            point_cloud2.read_points(
+                self._snapshot(attribute),
+                field_names=("x", "y", "z"),
+                skip_nans=True,
+            )
+        )
+
+    def _assert_frame_error(self, message, **kwargs):
+        planner_stamp = self._snapshot("_planner_depth").header.stamp
+        dynamic_points = self._cloud_points("_dynamic_cloud")
+        self._publish_synchronized_inputs(**kwargs)
+        self._wait_for_mapping_publications_after_planner(
+            planner_stamp, message
+        )
+        health = self._snapshot("_health")
+        self.assertFalse(health.map_healthy, message)
+        self.assertEqual("FRAME_ERROR", health.fault_code, message)
+        self.assertTrue(
+            self._cloud_points("_dynamic_cloud").issubset(dynamic_points),
+            message + ": the rejected frame added a dynamic voxel",
+        )
 
     def test_semantic_map_health_timeout_and_dynamic_ttl(self):
         self._publish_inputs_for(1.0)
@@ -238,11 +349,29 @@ class LocalMappingNodeTest(unittest.TestCase):
         self.assertEqual("map", frontier_goal.header.frame_id)
         self.assertAlmostEqual(3.0, frontier_goal.pose.position.z)
 
-        self._keep_odom_for(1.0)
+        self._keep_depth_for(0.7)
         self._wait_for(
             lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").depth_healthy
+            and not self._snapshot("_health").odom_healthy
+            and self._snapshot("_health").fault_code == "ODOM_TIMEOUT",
+            "depth-only input did not isolate the odometry timeout",
+        )
+
+        self._publish_inputs_for(0.5)
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").map_healthy,
+            "mapping did not recover after the odometry timeout",
+        )
+
+        self._keep_odom_for(0.7)
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and not self._snapshot("_health").depth_healthy
+            and self._snapshot("_health").odom_healthy
             and self._snapshot("_health").fault_code == "DEPTH_TIMEOUT",
-            "stale depth did not report DEPTH_TIMEOUT",
+            "odometry-only input did not isolate the depth timeout",
         )
         self._wait_for(
             lambda: self._snapshot("_dynamic_cloud") is not None
@@ -250,6 +379,115 @@ class LocalMappingNodeTest(unittest.TestCase):
             "dynamic point cloud did not expire",
         )
         self.assertFalse(self._snapshot("_health").map_healthy)
+
+        planner_stamp_before_recovery = self._snapshot(
+            "_planner_depth"
+        ).header.stamp
+        self._publish_synchronized_inputs(depth_mm=3000)
+        self._wait_for_mapping_publications_after_planner(
+            planner_stamp_before_recovery,
+            "the isolated recovery frame",
+        )
+        self.assertFalse(
+            self._snapshot("_health").map_healthy,
+            "one synchronized frame bypassed the recovery window",
+        )
+        self.assertEqual(
+            0,
+            len(self._snapshot("_dynamic_cloud").data),
+            "a frame inside the recovery window was fused",
+        )
+
+        self._keep_odom_for(0.4)
+        self._assert_frame_error(
+            "a frame error during health recovery was hidden",
+            depth_mm=3600,
+            odom_parent="/wrong_map",
+        )
+
+        self._publish_inputs_for(0.5, depth_mm=3000)
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").map_healthy,
+            "continuous synchronized input did not restore mapping",
+        )
+        self._wait_for(
+            lambda: self._snapshot("_dynamic_cloud") is not None
+            and len(self._snapshot("_dynamic_cloud").data) > 0,
+            "recovered synchronized input was not fused",
+        )
+
+        self._assert_frame_error(
+            "wrong odometry parent frame did not fail closed",
+            depth_mm=4000,
+            odom_parent="/wrong_map",
+        )
+
+        self._assert_frame_error(
+            "wrong odometry child frame did not fail closed",
+            depth_mm=5000,
+            odom_child="wrong_base",
+        )
+
+        self._assert_frame_error(
+            "mismatched depth and CameraInfo frames did not fail closed",
+            depth_mm=6000,
+            depth_frame="wrong_camera",
+            info_frame="test_camera",
+        )
+
+        self._assert_frame_error(
+            "wrong effective camera frame did not fail closed",
+            depth_mm=7000,
+            depth_frame="/wrong_camera",
+            info_frame="/wrong_camera",
+        )
+
+        self._publish_inputs_for(
+            0.3,
+            depth_frame="/test_camera",
+            info_frame="/test_camera",
+            odom_parent="/map",
+            odom_child="/base_link",
+        )
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").map_healthy,
+            "correct normalized frames did not restore mapping",
+        )
+
+        dropped_before = self._snapshot("_health").dropped_frames
+        bad_stamp_a = rospy.Time.now() + rospy.Duration(1.0)
+        bad_stamp_b = bad_stamp_a + rospy.Duration(0.01)
+        self._publish_depth(
+            bad_stamp_a, encoding="8UC1", sequence=101
+        )
+        self._wait_for(
+            lambda: self._snapshot("_health").dropped_frames
+            >= dropped_before + 1,
+            "first invalid depth frame was not counted",
+        )
+        self._publish_depth(
+            bad_stamp_b, encoding="8UC1", sequence=102
+        )
+        self._wait_for(
+            lambda: self._snapshot("_health").dropped_frames
+            >= dropped_before + 2,
+            "second invalid depth frame was not counted",
+        )
+        health_stamp = self._snapshot("_health").header.stamp
+        self._publish_camera_info_and_odom(bad_stamp_a)
+        self._wait_for(
+            lambda: self._snapshot("_health").header.stamp > health_stamp
+            and self._snapshot("_health").fault_code
+            == "DEPTH_ENCODING_ERROR",
+            "the delayed invalid depth synchronization was not processed",
+        )
+        self.assertEqual(
+            dropped_before + 2,
+            self._snapshot("_health").dropped_frames,
+            "a delayed raw/sync duplicate depth frame was counted twice",
+        )
 
 
 if __name__ == "__main__":

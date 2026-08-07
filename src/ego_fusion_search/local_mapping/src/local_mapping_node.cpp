@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -43,6 +44,12 @@ namespace local_mapping {
 namespace {
 
 constexpr char kMapFrame[] = "map";
+constexpr std::size_t kRecentDepthDropCapacity = 64;
+
+struct DepthMessageKey {
+  std::uint32_t sequence;
+  std::uint64_t stamp_nanoseconds;
+};
 
 struct NodeConfig {
   double max_sync_delta;
@@ -234,6 +241,26 @@ bool finitePoint(const Vec3& point) {
   return finite(point.x) && finite(point.y) && finite(point.z);
 }
 
+std::string normalizedFrame(const std::string& frame) {
+  const std::size_t first_character = frame.find_first_not_of('/');
+  return first_character == std::string::npos
+             ? std::string()
+             : frame.substr(first_character);
+}
+
+bool sameFrame(const std::string& first, const std::string& second) {
+  const std::string normalized_first = normalizedFrame(first);
+  return !normalized_first.empty() &&
+         normalized_first == normalizedFrame(second);
+}
+
+bool concreteMappingFault(const std::string& fault) {
+  return fault == "FRAME_ERROR" || fault == "TF_ERROR" ||
+         fault == "CAMERA_INFO_ERROR" ||
+         fault == "DEPTH_ENCODING_ERROR" || fault == "MAP_INPUT_ERROR" ||
+         fault == "SYNC_ERROR";
+}
+
 }  // namespace
 
 class LocalMappingNode {
@@ -277,6 +304,10 @@ class LocalMappingNode {
     boxes_subscriber_ = node_.subscribe(
         config_.bounding_boxes_topic, 1,
         &LocalMappingNode::boundingBoxesCallback, this);
+    health_depth_subscriber_ = node_.subscribe(
+        config_.depth_topic, 5, &LocalMappingNode::depthHealthCallback, this);
+    health_odom_subscriber_ = node_.subscribe(
+        config_.odom_topic, 5, &LocalMappingNode::odomHealthCallback, this);
     depth_subscriber_.subscribe(node_, config_.depth_topic, 5);
     camera_info_subscriber_.subscribe(node_, config_.camera_info_topic, 5);
     odom_subscriber_.subscribe(node_, config_.odom_topic, 5);
@@ -297,6 +328,60 @@ class LocalMappingNode {
   using SyncPolicy = message_filters::sync_policies::ApproximateTime<
       sensor_msgs::Image, sensor_msgs::CameraInfo, nav_msgs::Odometry>;
   using Synchronizer = message_filters::Synchronizer<SyncPolicy>;
+
+  bool decodeDepth(const sensor_msgs::ImageConstPtr& message,
+                   cv_bridge::CvImageConstPtr* bridge,
+                   bool report_error) const {
+    if (message->encoding != sensor_msgs::image_encodings::TYPE_16UC1 &&
+        message->encoding != sensor_msgs::image_encodings::TYPE_32FC1) {
+      return false;
+    }
+    try {
+      *bridge = cv_bridge::toCvShare(message);
+      return true;
+    } catch (const cv_bridge::Exception& error) {
+      if (report_error) {
+        ROS_WARN_THROTTLE(1.0, "local mapping depth conversion failed: %s",
+                          error.what());
+      }
+      return false;
+    }
+  }
+
+  void noteDepthDropOnce(const sensor_msgs::Image& message) {
+    const DepthMessageKey key{message.header.seq,
+                              message.header.stamp.toNSec()};
+    const auto duplicate = std::find_if(
+        recent_depth_drop_keys_.begin(), recent_depth_drop_keys_.end(),
+        [&key](const DepthMessageKey& previous) {
+          return previous.sequence == key.sequence &&
+                 previous.stamp_nanoseconds == key.stamp_nanoseconds;
+        });
+    if (duplicate != recent_depth_drop_keys_.end()) {
+      return;
+    }
+
+    health_monitor_->noteDroppedFrame();
+    recent_depth_drop_keys_.push_back(key);
+    if (recent_depth_drop_keys_.size() > kRecentDepthDropCapacity) {
+      recent_depth_drop_keys_.pop_front();
+    }
+  }
+
+  void depthHealthCallback(const sensor_msgs::ImageConstPtr& message) {
+    cv_bridge::CvImageConstPtr bridge;
+    if (!decodeDepth(message, &bridge, true)) {
+      health_monitor_->observeDepth(message->header.stamp.toSec(), 0.0);
+      noteDepthDropOnce(*message);
+      return;
+    }
+    health_monitor_->observeDepth(message->header.stamp.toSec(),
+                                  validDepthRatio(bridge->image));
+  }
+
+  void odomHealthCallback(const nav_msgs::OdometryConstPtr& message) {
+    health_monitor_->observeOdom(message->header.stamp.toSec());
+  }
 
   void boundingBoxesCallback(
       const darknet_ros_msgs::BoundingBoxesConstPtr& message) {
@@ -385,7 +470,7 @@ class LocalMappingNode {
   }
 
   bool mapFromCamera(const nav_msgs::Odometry& odom,
-                     const sensor_msgs::CameraInfo& camera_info,
+                     const std::string& camera_frame,
                      tf2::Transform* transform) {
     const auto& position = odom.pose.pose.position;
     tf2::Quaternion odom_rotation;
@@ -398,9 +483,6 @@ class LocalMappingNode {
       return false;
     }
 
-    const std::string camera_frame = config_.camera_frame.empty()
-                                         ? camera_info.header.frame_id
-                                         : config_.camera_frame;
     if (camera_frame.empty()) {
       last_mapping_fault_ = "TF_ERROR";
       return false;
@@ -415,6 +497,13 @@ class LocalMappingNode {
       ROS_WARN_THROTTLE(1.0, "local mapping camera TF unavailable: %s",
                         error.what());
       last_mapping_fault_ = "TF_ERROR";
+      return false;
+    }
+
+    if (!sameFrame(base_from_camera_message.header.frame_id,
+                   config_.base_frame) ||
+        !sameFrame(base_from_camera_message.child_frame_id, camera_frame)) {
+      last_mapping_fault_ = "FRAME_ERROR";
       return false;
     }
 
@@ -442,28 +531,15 @@ class LocalMappingNode {
       const sensor_msgs::ImageConstPtr& depth_message,
       const sensor_msgs::CameraInfoConstPtr& camera_info,
       const nav_msgs::OdometryConstPtr& odom) {
+    last_fusion_valid_ = false;
     const double depth_stamp = depth_message->header.stamp.toSec();
     const double odom_stamp = odom->header.stamp.toSec();
     health_monitor_->observeOdom(odom_stamp);
 
-    if (depth_message->encoding != sensor_msgs::image_encodings::TYPE_16UC1 &&
-        depth_message->encoding != sensor_msgs::image_encodings::TYPE_32FC1) {
-      health_monitor_->observeDepth(depth_stamp, 0.0);
-      health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
-      last_mapping_fault_ = "DEPTH_ENCODING_ERROR";
-      return;
-    }
-
     cv_bridge::CvImageConstPtr bridge;
-    try {
-      bridge = cv_bridge::toCvShare(depth_message);
-    } catch (const cv_bridge::Exception& error) {
-      ROS_WARN_THROTTLE(1.0, "local mapping depth conversion failed: %s",
-                        error.what());
+    if (!decodeDepth(depth_message, &bridge, false)) {
       health_monitor_->observeDepth(depth_stamp, 0.0);
-      health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
+      noteDepthDropOnce(*depth_message);
       last_mapping_fault_ = "DEPTH_ENCODING_ERROR";
       return;
     }
@@ -480,7 +556,6 @@ class LocalMappingNode {
       ROS_WARN_THROTTLE(1.0, "local mapping semantic filter failed: %s",
                         error.what());
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
       last_mapping_fault_ = "DEPTH_ENCODING_ERROR";
       return;
     }
@@ -496,21 +571,39 @@ class LocalMappingNode {
         std::fabs(depth_stamp - odom_stamp) > config_.max_sync_delta ||
         std::fabs(depth_stamp - camera_stamp) > config_.max_sync_delta) {
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
       last_mapping_fault_ = "SYNC_ERROR";
       return;
     }
     if (!validCameraInfo(*camera_info, depth)) {
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
       last_mapping_fault_ = "CAMERA_INFO_ERROR";
       return;
     }
 
-    tf2::Transform map_from_camera;
-    if (!mapFromCamera(*odom, *camera_info, &map_from_camera)) {
+    const std::string effective_camera_frame = normalizedFrame(
+        config_.camera_frame.empty() ? camera_info->header.frame_id
+                                     : config_.camera_frame);
+    if (!sameFrame(odom->header.frame_id, kMapFrame) ||
+        !sameFrame(odom->child_frame_id, config_.base_frame) ||
+        !sameFrame(depth_message->header.frame_id, effective_camera_frame) ||
+        !sameFrame(camera_info->header.frame_id, effective_camera_frame)) {
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
+      last_mapping_fault_ = "FRAME_ERROR";
+      return;
+    }
+
+    const double frame_time =
+        std::max(depth_stamp, std::max(camera_stamp, odom_stamp));
+    const HealthResult frame_health = health_monitor_->evaluate(frame_time);
+    last_health_result_ = frame_health;
+    if (!frame_health.healthy) {
+      last_mapping_fault_ = "NOT_READY";
+      return;
+    }
+
+    tf2::Transform map_from_camera;
+    if (!mapFromCamera(*odom, effective_camera_frame, &map_from_camera)) {
+      health_monitor_->noteDroppedFrame();
       return;
     }
 
@@ -522,19 +615,11 @@ class LocalMappingNode {
                              odom->pose.pose.position.z};
     if (!finitePoint(camera_origin) || !finitePoint(odom_position)) {
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
       last_mapping_fault_ = "TF_ERROR";
       return;
     }
     latest_odom_position_ = odom_position;
     has_reliable_odom_ = true;
-
-    if (!last_health_result_.healthy ||
-        valid_ratio < config_.min_valid_depth_ratio) {
-      last_fusion_valid_ = false;
-      last_mapping_fault_ = "NOT_READY";
-      return;
-    }
 
     const double fx = camera_info->K[0];
     const double fy = camera_info->K[4];
@@ -572,7 +657,6 @@ class LocalMappingNode {
       ROS_WARN_THROTTLE(1.0, "local mapping integration failed: %s",
                         error.what());
       health_monitor_->noteDroppedFrame();
-      last_fusion_valid_ = false;
       last_mapping_fault_ = "MAP_INPUT_ERROR";
       return;
     }
@@ -744,7 +828,9 @@ class LocalMappingNode {
     health.valid_depth_ratio = last_health_result_.valid_depth_ratio;
     health.dropped_frames = health_monitor_->droppedFrames();
     health.fault_code = last_health_result_.fault_code;
-    if (last_health_result_.healthy && !last_fusion_valid_) {
+    if (!last_fusion_valid_ &&
+        (last_health_result_.healthy ||
+         concreteMappingFault(last_mapping_fault_))) {
       health.fault_code = last_mapping_fault_;
     }
     health_publisher_.publish(health);
@@ -785,6 +871,8 @@ class LocalMappingNode {
   message_filters::Subscriber<nav_msgs::Odometry> odom_subscriber_;
   std::unique_ptr<Synchronizer> synchronizer_;
   ros::Subscriber boxes_subscriber_;
+  ros::Subscriber health_depth_subscriber_;
+  ros::Subscriber health_odom_subscriber_;
 
   ros::Publisher planner_depth_publisher_;
   ros::Publisher static_cloud_publisher_;
@@ -802,6 +890,7 @@ class LocalMappingNode {
   darknet_ros_msgs::BoundingBoxesConstPtr cached_boxes_;
   ros::Time cached_boxes_stamp_;
   bool cached_boxes_used_;
+  std::deque<DepthMessageKey> recent_depth_drop_keys_;
 };
 
 }  // namespace local_mapping
