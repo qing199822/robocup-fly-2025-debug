@@ -534,11 +534,9 @@ class LocalMappingNode {
     last_fusion_valid_ = false;
     const double depth_stamp = depth_message->header.stamp.toSec();
     const double odom_stamp = odom->header.stamp.toSec();
-    health_monitor_->observeOdom(odom_stamp);
 
     cv_bridge::CvImageConstPtr bridge;
     if (!decodeDepth(depth_message, &bridge, false)) {
-      health_monitor_->observeDepth(depth_stamp, 0.0);
       noteDepthDropOnce(*depth_message);
       last_mapping_fault_ = "DEPTH_ENCODING_ERROR";
       return;
@@ -546,7 +544,6 @@ class LocalMappingNode {
 
     const cv::Mat& depth = bridge->image;
     const double valid_ratio = validDepthRatio(depth);
-    health_monitor_->observeDepth(depth_stamp, valid_ratio);
 
     FilteredDepth filtered;
     try {
@@ -592,11 +589,11 @@ class LocalMappingNode {
       return;
     }
 
-    const double frame_time =
-        std::max(depth_stamp, std::max(camera_stamp, odom_stamp));
-    const HealthResult frame_health = health_monitor_->evaluate(frame_time);
+    const HealthResult frame_health =
+        health_monitor_->evaluate(ros::Time::now().toSec());
     last_health_result_ = frame_health;
-    if (!frame_health.healthy) {
+    if (!frame_health.healthy ||
+        valid_ratio < config_.min_valid_depth_ratio) {
       last_mapping_fault_ = "NOT_READY";
       return;
     }
