@@ -9,7 +9,7 @@ find_package(OpenCV REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES local_mapping_health local_mapping_semantic
+  LIBRARIES local_mapping_health local_mapping_semantic local_mapping_voxel
   CATKIN_DEPENDS darknet_ros_msgs roscpp
   DEPENDS OpenCV
 )
@@ -23,6 +23,8 @@ add_library(local_mapping_semantic src/semantic_depth_filter.cpp)
 add_dependencies(local_mapping_semantic ${catkin_EXPORTED_TARGETS})
 target_link_libraries(
   local_mapping_semantic ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+
+add_library(local_mapping_voxel src/voxel_map.cpp)
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
@@ -38,5 +40,9 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(
       semantic_depth_filter_test local_mapping_semantic ${catkin_LIBRARIES}
       ${OpenCV_LIBRARIES})
+  endif()
+  catkin_add_gtest(voxel_map_test test/voxel_map_test.cpp)
+  if(TARGET voxel_map_test)
+    target_link_libraries(voxel_map_test local_mapping_voxel)
   endif()
 endif()
