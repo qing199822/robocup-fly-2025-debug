@@ -8,6 +8,7 @@ from pathlib import Path
 MISSION_FILE = Path(__file__).resolve().parents[1] / "launch" / "mission_down.json"
 MISSION_FILES = sorted(MISSION_FILE.parent.glob("mission_*.json"))
 HORIZONTAL_CLEARANCE = 2.0
+WAYPOINT_SWITCH_ALLOWANCE = 3.0
 MAX_FLIGHT_ALTITUDE = 6.0
 INTER_VEHICLE_CLEARANCE = 5.0
 PATROL_ALTITUDE = 3.5
@@ -22,6 +23,14 @@ INITIAL_POSITIONS = {
     "typhoon_h480_4": (-17.0, 3.0, 3.0),
     "typhoon_h480_5": (-14.0, 3.0, 3.0),
 }
+
+# Conservative world-frame AABBs derived from robocup.world collision
+# transforms and model collision meshes; values are rounded outward.
+SWITCH_SENSITIVE_OBSTACLES = (
+    ("house_1_66", 54.89, 67.83, 14.91, 31.41, 7.69),
+    ("house_2_71", 70.34, 83.08, 8.50, 18.30, 7.20),
+    ("house_3_68", 90.10, 102.76, 11.74, 16.54, 10.62),
+)
 
 # Bounds are calculated from the collision meshes and transforms in robocup.world.
 STATIC_OBSTACLES = (
@@ -43,6 +52,7 @@ STATIC_OBSTACLES = (
     ("lamp_post_196", 70.40, 71.60, 3.10, 4.30, 7.20),
     ("lamp_post_197", 83.40, 84.60, -4.30, -3.10, 7.20),
     ("lamp_post_198", 89.90, 91.10, 3.10, 4.30, 7.20),
+    *SWITCH_SENSITIVE_OBSTACLES,
 )
 
 
@@ -198,22 +208,25 @@ def clip_segment_outside_box(start, end, bounds=LAUNCH_BOX):
     return outside
 
 
-def collect_obstacle_collisions(missions):
+def collect_obstacle_collisions(
+        missions,
+        obstacles=STATIC_OBSTACLES,
+        horizontal_clearance=HORIZONTAL_CLEARANCE):
     collisions = []
     for mission in missions:
         vehicle_id = mission["vehicle_id"]
         for index, (start, end) in enumerate(mission_segments(mission), start=1):
             segment_floor = min(start["z"], end["z"])
-            for name, x_min, x_max, y_min, y_max, z_max in STATIC_OBSTACLES:
+            for name, x_min, x_max, y_min, y_max, z_max in obstacles:
                 if segment_floor > z_max:
                     continue
                 if segment_intersects_box(
                     start,
                     end,
-                    x_min - HORIZONTAL_CLEARANCE,
-                    x_max + HORIZONTAL_CLEARANCE,
-                    y_min - HORIZONTAL_CLEARANCE,
-                    y_max + HORIZONTAL_CLEARANCE,
+                    x_min - horizontal_clearance,
+                    x_max + horizontal_clearance,
+                    y_min - horizontal_clearance,
+                    y_max + horizontal_clearance,
                 ):
                     collisions.append(
                         f"{vehicle_id} segment {index} intersects {name}"
@@ -320,6 +333,16 @@ class MissionClearanceTest(unittest.TestCase):
 
     def test_all_complete_segments_clear_known_static_obstacles(self):
         collisions = collect_obstacle_collisions(load_missions(MISSION_FILE))
+        self.assertEqual([], collisions, "\n" + "\n".join(collisions))
+
+    def test_routes_clear_switch_sensitive_buildings_with_arrival_allowance(self):
+        collisions = collect_obstacle_collisions(
+            load_missions(MISSION_FILE),
+            obstacles=SWITCH_SENSITIVE_OBSTACLES,
+            horizontal_clearance=(
+                HORIZONTAL_CLEARANCE + WAYPOINT_SWITCH_ALLOWANCE
+            ),
+        )
         self.assertEqual([], collisions, "\n" + "\n".join(collisions))
 
     def test_different_aircraft_routes_clear_five_metres_outside_launch_box(self):
