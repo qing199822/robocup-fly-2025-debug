@@ -719,3 +719,9 @@ git ls-remote --heads public competition-clean
 - 单独启动的 `local_mapping` 正常退出；主启动器 `1.sh` 按 `Ctrl-C` 后退出码为 130。
 - 停止后，本次 Gazebo、PX4、`roslaunch`、MAVROS 和 XTDrone 通信相关进程均无残留，本次临时目录无残留，XTDrone 工作树状态为空。
 - 原始 `~/.ros` 日志只作本机诊断证据，不得提交到仓库。
+
+### 官方输入保护
+
+本轮 Task 7B 未修改 PX4、XTDrone、Gazebo、EGO-Planner-Swarm、官方无人机模型或官方 World。本次 `1.sh` 真实运行在进入主启动流程前，已由启动器校验 PX4、XTDrone、Gazebo 模型和外部 Python 环境根目录均为独立只读挂载；官方 World 位于受保护的 PX4 树中。XTDrone 在运行前后的 `git status --short` 均为空。
+
+本节成文时，尚未取得针对当前 HEAD 的完整 `competition-clean` verifier 结果，因此不把历史的构建前后合规哈希当作本轮证据。主 Agent 完成验证后，应以本轮新生成的 `competition-artifacts/static-compliance.json` 和 `competition-artifacts/post-build-compliance.json` 补记构建前后哈希结果。

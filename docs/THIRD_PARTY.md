@@ -13,6 +13,6 @@ Actor 插件的源码副本只用于本仓库构建接口，不能据此修改 X
 
 队伍包的许可证保持原声明：`fly`、`simple_navigator` 使用 BSD，`pose_init` 使用 Apache-2.0；其余队伍包中原先只有占位许可的包使用 `LicenseRef-Team-Code`。这个标识只表示队伍代码的保留权利，不授予新的开源许可，也不覆盖任何第三方文件。
 
-`src/ego_fusion_search/local_mapping` 和 `src/ego_fusion_search/search_msgs` 是队伍自有源码。它们复用系统安装的 ROS、PCL 和 OpenCV，并依赖上表已登记的 `darknet_ros_msgs`；这两个包没有复制新的第三方源码进入仓库。
+`src/ego_fusion_search/local_mapping` 和 `src/ego_fusion_search/search_msgs` 是队伍自有源码。`local_mapping` 复用系统安装的 ROS、PCL 和 OpenCV，并依赖上表已登记的 `darknet_ros_msgs`。`search_msgs` 只使用 ROS 的 message generation 与 `std_msgs`。这两个包没有复制新的第三方源码进入仓库。
 
 提交或公开 issue 时不要上传完整 PX4 归档、外部模型库、Python 虚拟环境或未获授权的权重副本；只提供版本、哈希、日志和必要的错误片段。
