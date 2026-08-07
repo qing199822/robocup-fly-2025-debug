@@ -51,6 +51,11 @@ struct DepthMessageKey {
   std::uint64_t stamp_nanoseconds;
 };
 
+struct BoxAssociation {
+  bool valid;
+  std::vector<darknet_ros_msgs::BoundingBox> boxes;
+};
+
 struct NodeConfig {
   double max_sync_delta;
   double depth_timeout;
@@ -404,17 +409,16 @@ class LocalMappingNode {
     cached_boxes_used_ = false;
   }
 
-  std::vector<darknet_ros_msgs::BoundingBox> boxesForDepth(
-      const ros::Time& depth_stamp) {
+  BoxAssociation boxesForDepth(const ros::Time& depth_stamp) {
     if (!cached_boxes_) {
       health_monitor_->noteDroppedFrame();
-      return {};
+      return {false, {}};
     }
     const double delta =
         std::fabs((cached_boxes_stamp_ - depth_stamp).toSec());
     if (finite(delta) && delta <= config_.max_sync_delta) {
       cached_boxes_used_ = true;
-      return cached_boxes_->bounding_boxes;
+      return {true, cached_boxes_->bounding_boxes};
     }
 
     health_monitor_->noteDroppedFrame();
@@ -422,7 +426,7 @@ class LocalMappingNode {
       cached_boxes_.reset();
       cached_boxes_used_ = false;
     }
-    return {};
+    return {false, {}};
   }
 
   bool depthAt(const cv::Mat& depth, int row, int column,
@@ -547,10 +551,11 @@ class LocalMappingNode {
     const cv::Mat& depth = bridge->image;
     const double valid_ratio = validDepthRatio(depth);
 
+    const BoxAssociation box_association =
+        boxesForDepth(depth_message->header.stamp);
     FilteredDepth filtered;
     try {
-      filtered = semantic_filter_->apply(depth, boxesForDepth(
-                                                    depth_message->header.stamp));
+      filtered = semantic_filter_->apply(depth, box_association.boxes);
     } catch (const std::exception& error) {
       ROS_WARN_THROTTLE(1.0, "local mapping semantic filter failed: %s",
                         error.what());
@@ -563,6 +568,11 @@ class LocalMappingNode {
         cv_bridge::CvImage(depth_message->header, depth_message->encoding,
                            filtered.planner_depth)
             .toImageMsg());
+
+    if (!box_association.valid) {
+      last_mapping_fault_ = "SYNC_ERROR";
+      return;
+    }
 
     const double camera_stamp = camera_info->header.stamp.toSec();
     if (!finite(depth_stamp) || !finite(odom_stamp) ||

@@ -124,18 +124,19 @@ class LocalMappingNodeTest(unittest.TestCase):
         odom = self._make_odom(stamp, parent_frame, child_frame)
         self._odom_pub.publish(odom)
 
-    def _publish_boxes(self, stamp):
+    def _publish_boxes(self, stamp, include_person=True):
         boxes = BoundingBoxes()
         boxes.header.stamp = stamp
         boxes.image_header.stamp = stamp
-        person = BoundingBox()
-        person.Class = "green0"
-        person.probability = 0.99
-        person.xmin = 4
-        person.ymin = 4
-        person.xmax = 7
-        person.ymax = 7
-        boxes.bounding_boxes = [person]
+        if include_person:
+            person = BoundingBox()
+            person.Class = "green0"
+            person.probability = 0.99
+            person.xmin = 4
+            person.ymin = 4
+            person.xmax = 7
+            person.ymax = 7
+            boxes.bounding_boxes = [person]
         self._boxes_pub.publish(boxes)
 
     def _make_depth(
@@ -205,9 +206,15 @@ class LocalMappingNodeTest(unittest.TestCase):
         info_frame="test_camera",
         odom_parent="map",
         odom_child="base_link",
+        boxes="person",
+        boxes_stamp=None,
     ):
         stamp = rospy.Time.now()
-        self._publish_boxes(stamp)
+        if boxes is not None:
+            self._publish_boxes(
+                stamp if boxes_stamp is None else boxes_stamp,
+                include_person=boxes == "person",
+            )
         depth = self._make_depth(stamp, depth_mm, depth_frame)
         camera_info = self._make_camera_info(stamp, info_frame)
         odom = self._make_odom(stamp, odom_parent, odom_child)
@@ -309,6 +316,80 @@ class LocalMappingNodeTest(unittest.TestCase):
         )
 
     def test_semantic_map_health_timeout_and_dynamic_ttl(self):
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_static_cloud") is not None
+            and self._snapshot("_dynamic_cloud") is not None,
+            "initial mapping publications were not available",
+        )
+
+        planner_stamp = rospy.Time(0)
+        static_before = self._cloud_points("_static_cloud")
+        dynamic_before = self._cloud_points("_dynamic_cloud")
+        self._publish_inputs_for(0.35, depth_mm=4200, boxes=None)
+        self._wait_for_mapping_publications_after_planner(
+            planner_stamp, "depth without BoundingBoxes"
+        )
+        self.assertTrue(
+            self._cloud_points("_static_cloud").issubset(static_before),
+            "depth without BoundingBoxes added a static voxel",
+        )
+        self.assertTrue(
+            self._cloud_points("_dynamic_cloud").issubset(dynamic_before),
+            "depth without BoundingBoxes added a dynamic voxel",
+        )
+        self._wait_for(
+            lambda: not self._snapshot("_health").map_healthy
+            and self._snapshot("_health").fault_code == "SYNC_ERROR",
+            "depth without BoundingBoxes did not report SYNC_ERROR",
+        )
+
+        planner_stamp = self._snapshot("_planner_depth").header.stamp
+        static_before = self._cloud_points("_static_cloud")
+        dynamic_before = self._cloud_points("_dynamic_cloud")
+        stale_boxes_stamp = rospy.Time.now() - rospy.Duration(1.0)
+        self._publish_inputs_for(
+            0.35,
+            depth_mm=5200,
+            boxes="person",
+            boxes_stamp=stale_boxes_stamp,
+        )
+        self._wait_for_mapping_publications_after_planner(
+            planner_stamp, "depth with stale BoundingBoxes"
+        )
+        self.assertTrue(
+            self._cloud_points("_static_cloud").issubset(static_before),
+            "depth with stale BoundingBoxes added a static voxel",
+        )
+        self.assertTrue(
+            self._cloud_points("_dynamic_cloud").issubset(dynamic_before),
+            "depth with stale BoundingBoxes added a dynamic voxel",
+        )
+        self._wait_for(
+            lambda: not self._snapshot("_health").map_healthy
+            and self._snapshot("_health").fault_code == "SYNC_ERROR",
+            "depth with stale BoundingBoxes did not report SYNC_ERROR",
+        )
+
+        static_before = self._cloud_points("_static_cloud")
+        dynamic_before = self._cloud_points("_dynamic_cloud")
+        self._publish_inputs_for(0.5, depth_mm=3200, boxes="empty")
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").map_healthy,
+            "fresh empty BoundingBoxes did not restore mapping",
+        )
+        self._wait_for(
+            lambda: bool(
+                self._cloud_points("_static_cloud") - static_before
+            ),
+            "fresh empty BoundingBoxes did not add static depth voxels",
+        )
+        self.assertTrue(
+            self._cloud_points("_dynamic_cloud").issubset(dynamic_before),
+            "fresh empty BoundingBoxes added a dynamic voxel",
+        )
+
         self._publish_inputs_for(1.0)
         self._wait_for(
             lambda: self._snapshot("_health") is not None
