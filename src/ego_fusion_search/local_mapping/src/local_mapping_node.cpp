@@ -26,10 +26,12 @@
 #include <ros/ros.h>
 #include <search_msgs/LocalClearance.h>
 #include <search_msgs/PerceptionHealth.h>
+#include <search_msgs/ValidateTrajectory.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/image_encodings.h>
+#include <std_msgs/UInt64.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/buffer.h>
@@ -77,7 +79,15 @@ struct NodeConfig {
   double search_altitude;
   double max_frontier_distance;
   double frontier_resolution;
+  double vehicle_horizontal_radius;
   double vehicle_vertical_radius;
+  double trajectory_safety_margin;
+  double trajectory_max_age;
+  double trajectory_max_future;
+  double trajectory_start_tolerance;
+  double trajectory_max_sample_gap;
+  double min_search_altitude;
+  double max_search_altitude;
   int min_frontier_cluster_cells;
   double max_clearance_distance;
   std::string base_frame;
@@ -89,6 +99,9 @@ struct NodeConfig {
   std::string odom_topic;
   std::string bounding_boxes_topic;
   std::string planner_depth_topic;
+  std::string planner_pose_topic;
+  std::string validate_trajectory_service;
+  std::string task_generation_topic;
   std::string static_cloud_topic;
   std::string dynamic_cloud_topic;
   std::string health_topic;
@@ -125,8 +138,23 @@ NodeConfig loadConfig(ros::NodeHandle* node) {
   config.max_frontier_distance =
       parameter(node, "max_frontier_distance", 8.0);
   config.frontier_resolution = parameter(node, "frontier_resolution", 0.25);
+  config.vehicle_horizontal_radius =
+      parameter(node, "vehicle_horizontal_radius", 0.35);
   config.vehicle_vertical_radius =
       parameter(node, "vehicle_vertical_radius", 0.20);
+  config.trajectory_safety_margin =
+      parameter(node, "trajectory_safety_margin", 0.10);
+  config.trajectory_max_age = parameter(node, "trajectory_max_age", 0.50);
+  config.trajectory_max_future =
+      parameter(node, "trajectory_max_future", 0.20);
+  config.trajectory_start_tolerance =
+      parameter(node, "trajectory_start_tolerance", 0.75);
+  config.trajectory_max_sample_gap =
+      parameter(node, "trajectory_max_sample_gap", 0.20);
+  config.min_search_altitude =
+      parameter(node, "min_search_altitude", 2.00);
+  config.max_search_altitude =
+      parameter(node, "max_search_altitude", 4.00);
   config.min_frontier_cluster_cells =
       parameter(node, "min_frontier_cluster_cells", 2);
   config.max_clearance_distance =
@@ -150,6 +178,15 @@ NodeConfig loadConfig(ros::NodeHandle* node) {
   config.planner_depth_topic = parameter<std::string>(
       node, "planner_depth_topic",
       "/typhoon_h480_0/local_mapping/planner_depth");
+  config.planner_pose_topic = parameter<std::string>(
+      node, "planner_pose_topic",
+      "/typhoon_h480_0/local_mapping/planner_pose");
+  config.validate_trajectory_service = parameter<std::string>(
+      node, "validate_trajectory_service",
+      "/typhoon_h480_0/local_mapping/validate_trajectory");
+  config.task_generation_topic = parameter<std::string>(
+      node, "task_generation_topic",
+      "/typhoon_h480_0/navigation/task_generation");
   config.static_cloud_topic = parameter<std::string>(
       node, "static_cloud_topic",
       "/typhoon_h480_0/local_mapping/static_cloud");
@@ -198,8 +235,22 @@ void validateConfig(const NodeConfig& config) {
       finite(config.max_frontier_distance) &&
       config.max_frontier_distance > 0.0 &&
       finite(config.frontier_resolution) && config.frontier_resolution > 0.0 &&
+      finite(config.vehicle_horizontal_radius) &&
+      config.vehicle_horizontal_radius >= 0.0 &&
       finite(config.vehicle_vertical_radius) &&
       config.vehicle_vertical_radius >= 0.0 &&
+      finite(config.trajectory_safety_margin) &&
+      config.trajectory_safety_margin >= 0.0 &&
+      finite(config.trajectory_max_age) && config.trajectory_max_age > 0.0 &&
+      finite(config.trajectory_max_future) &&
+      config.trajectory_max_future >= 0.0 &&
+      finite(config.trajectory_start_tolerance) &&
+      config.trajectory_start_tolerance >= 0.0 &&
+      finite(config.trajectory_max_sample_gap) &&
+      config.trajectory_max_sample_gap > 0.0 &&
+      finite(config.min_search_altitude) &&
+      finite(config.max_search_altitude) &&
+      config.max_search_altitude > config.min_search_altitude &&
       config.min_frontier_cluster_cells > 0 &&
       finite(config.max_clearance_distance) &&
       config.max_clearance_distance >= 0.0 && finite(config.tf_timeout) &&
@@ -209,6 +260,9 @@ void validateConfig(const NodeConfig& config) {
       !config.camera_info_topic.empty() && !config.odom_topic.empty() &&
       !config.bounding_boxes_topic.empty() &&
       !config.planner_depth_topic.empty() &&
+      !config.planner_pose_topic.empty() &&
+      !config.validate_trajectory_service.empty() &&
+      !config.task_generation_topic.empty() &&
       !config.static_cloud_topic.empty() &&
       !config.dynamic_cloud_topic.empty() && !config.health_topic.empty() &&
       !config.clearance_topic.empty() &&
@@ -303,6 +357,9 @@ class LocalMappingNode {
 
     planner_depth_publisher_ =
         node_.advertise<sensor_msgs::Image>(config_.planner_depth_topic, 1);
+    planner_pose_publisher_ =
+        node_.advertise<geometry_msgs::PoseStamped>(config_.planner_pose_topic,
+                                                    1);
     static_cloud_publisher_ = node_.advertise<sensor_msgs::PointCloud2>(
         config_.static_cloud_topic, 1);
     dynamic_cloud_publisher_ = node_.advertise<sensor_msgs::PointCloud2>(
@@ -317,6 +374,12 @@ class LocalMappingNode {
     boxes_subscriber_ = node_.subscribe(
         config_.bounding_boxes_topic, 1,
         &LocalMappingNode::boundingBoxesCallback, this);
+    generation_subscriber_ = node_.subscribe(
+        config_.task_generation_topic, 1,
+        &LocalMappingNode::taskGenerationCallback, this);
+    trajectory_server_ = node_.advertiseService(
+        config_.validate_trajectory_service,
+        &LocalMappingNode::validateTrajectoryCallback, this);
     health_depth_subscriber_ = node_.subscribe(
         config_.depth_topic, 5, &LocalMappingNode::depthHealthCallback, this);
     health_odom_subscriber_ = node_.subscribe(
@@ -357,6 +420,7 @@ class LocalMappingNode {
     last_fusion_valid_ = false;
     has_valid_mapping_input_ = false;
     last_valid_mapping_input_time_ = 0.0;
+    last_map_stamp_ = ros::Time(0);
     last_mapping_fault_ = "NOT_READY";
     cached_boxes_.reset();
     cached_boxes_stamp_ = ros::Time(0);
@@ -379,6 +443,17 @@ class LocalMappingNode {
     }
     const double future_offset = (stamp - now).toSec();
     return finite(future_offset) && future_offset <= 0.0;
+  }
+
+  bool mapHealthy(const HealthResult& health, double now) const {
+    const double fusion_timeout =
+        std::min(config_.depth_timeout, config_.odom_timeout);
+    const bool fusion_fresh =
+        has_valid_mapping_input_ && finite(now) &&
+        finite(last_valid_mapping_input_time_) &&
+        now >= last_valid_mapping_input_time_ &&
+        now - last_valid_mapping_input_time_ <= fusion_timeout;
+    return health.healthy && last_fusion_valid_ && fusion_fresh;
   }
 
   bool decodeDepth(const sensor_msgs::ImageConstPtr& message,
@@ -470,6 +545,112 @@ class LocalMappingNode {
     cached_boxes_ = message;
     cached_boxes_stamp_ = stamp;
     cached_boxes_used_ = false;
+  }
+
+  void taskGenerationCallback(const std_msgs::UInt64ConstPtr& message) {
+    if (message->data > task_generation_) {
+      task_generation_ = message->data;
+    }
+  }
+
+  bool validateTrajectoryCallback(
+      search_msgs::ValidateTrajectory::Request& request,
+      search_msgs::ValidateTrajectory::Response& response) {
+    response.valid = false;
+    response.task_generation = request.task_generation;
+    response.min_clearance_m = 0.0F;
+
+    const auto reject = [&response](const std::string& fault_code) {
+      response.valid = false;
+      response.min_clearance_m = 0.0F;
+      response.fault_code = fault_code;
+      return true;
+    };
+
+    const ros::Time now = ros::Time::now();
+    const bool epoch_reset = observeCurrentTime(now.toSec());
+    response.map_stamp = last_map_stamp_;
+    last_health_result_ = health_monitor_->evaluate(now.toSec());
+    if (epoch_reset || !mapHealthy(last_health_result_, now.toSec())) {
+      return reject("MAP_UNHEALTHY");
+    }
+    if (!sameFrame(request.header.frame_id, kMapFrame)) {
+      return reject("WRONG_FRAME");
+    }
+    const double age = (now - request.header.stamp).toSec();
+    const double future = (request.header.stamp - now).toSec();
+    if (!finite(age) || !finite(future)) {
+      return reject("INVALID_REQUEST");
+    }
+    if (age > config_.trajectory_max_age) {
+      return reject("STALE_TRAJECTORY");
+    }
+    if (future > config_.trajectory_max_future) {
+      return reject("FUTURE_TRAJECTORY");
+    }
+    if (request.task_generation != task_generation_) {
+      return reject("STALE_GENERATION");
+    }
+    if (request.samples.size() < 2u) {
+      return reject("EMPTY_TRAJECTORY");
+    }
+
+    std::vector<Vec3> samples;
+    samples.reserve(request.samples.size());
+    for (const auto& sample : request.samples) {
+      const Vec3 point{sample.x, sample.y, sample.z};
+      if (!finitePoint(point)) {
+        return reject("INVALID_REQUEST");
+      }
+      samples.push_back(point);
+    }
+
+    const auto distance = [](const Vec3& first, const Vec3& second) {
+      const long double dx = static_cast<long double>(second.x) - first.x;
+      const long double dy = static_cast<long double>(second.y) - first.y;
+      const long double dz = static_cast<long double>(second.z) - first.z;
+      return std::sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    const long double start_distance =
+        distance(samples.front(), latest_odom_position_);
+    if (!std::isfinite(start_distance)) {
+      return reject("INVALID_REQUEST");
+    }
+    if (start_distance > config_.trajectory_start_tolerance) {
+      return reject("START_DEVIATION");
+    }
+    for (const Vec3& sample : samples) {
+      if (sample.z < config_.min_search_altitude ||
+          sample.z > config_.max_search_altitude) {
+        return reject("HEIGHT_LIMIT");
+      }
+    }
+    for (std::size_t index = 1u; index < samples.size(); ++index) {
+      const long double gap = distance(samples[index - 1u], samples[index]);
+      if (!std::isfinite(gap)) {
+        return reject("INVALID_REQUEST");
+      }
+      if (gap > config_.trajectory_max_sample_gap) {
+        return reject("SAMPLE_GAP");
+      }
+    }
+
+    try {
+      const SweepResult result = voxel_map_->validateSweptVolume(
+          samples, config_.vehicle_horizontal_radius,
+          config_.vehicle_vertical_radius, config_.trajectory_safety_margin,
+          now.toSec());
+      if (!result.valid) {
+        return reject(result.fault == SweepFault::UNKNOWN ? "UNKNOWN"
+                                                          : "OCCUPIED");
+      }
+      response.valid = true;
+      response.min_clearance_m = static_cast<float>(result.min_clearance_m);
+      response.fault_code = "OK";
+      return true;
+    } catch (const std::exception&) {
+      return reject("INVALID_REQUEST");
+    }
   }
 
   BoxAssociation boxesForDepth(const ros::Time& depth_stamp) {
@@ -634,11 +815,6 @@ class LocalMappingNode {
       return;
     }
 
-    planner_depth_publisher_.publish(
-        cv_bridge::CvImage(depth_message->header, depth_message->encoding,
-                           filtered.planner_depth)
-            .toImageMsg());
-
     if (!box_association.valid) {
       last_mapping_fault_ = "SYNC_ERROR";
       return;
@@ -671,18 +847,36 @@ class LocalMappingNode {
       return;
     }
 
+    tf2::Transform map_from_camera;
+    if (!mapFromCamera(*odom, effective_camera_frame, &map_from_camera)) {
+      health_monitor_->noteDroppedFrame();
+      return;
+    }
+
+    geometry_msgs::PoseStamped planner_pose;
+    planner_pose.header.stamp = depth_message->header.stamp;
+    planner_pose.header.frame_id = kMapFrame;
+    const tf2::Vector3 planner_origin = map_from_camera.getOrigin();
+    const tf2::Quaternion planner_rotation = map_from_camera.getRotation();
+    planner_pose.pose.position.x = planner_origin.x();
+    planner_pose.pose.position.y = planner_origin.y();
+    planner_pose.pose.position.z = planner_origin.z();
+    planner_pose.pose.orientation.x = planner_rotation.x();
+    planner_pose.pose.orientation.y = planner_rotation.y();
+    planner_pose.pose.orientation.z = planner_rotation.z();
+    planner_pose.pose.orientation.w = planner_rotation.w();
+    planner_depth_publisher_.publish(
+        cv_bridge::CvImage(depth_message->header, depth_message->encoding,
+                           filtered.planner_depth)
+            .toImageMsg());
+    planner_pose_publisher_.publish(planner_pose);
+
     const HealthResult frame_health =
         health_monitor_->evaluate(ros::Time::now().toSec());
     last_health_result_ = frame_health;
     if (!frame_health.healthy ||
         valid_ratio < config_.min_valid_depth_ratio) {
       last_mapping_fault_ = "NOT_READY";
-      return;
-    }
-
-    tf2::Transform map_from_camera;
-    if (!mapFromCamera(*odom, effective_camera_frame, &map_from_camera)) {
-      health_monitor_->noteDroppedFrame();
       return;
     }
 
@@ -753,6 +947,7 @@ class LocalMappingNode {
           voxel_map_->integrateDynamicPoint(point, depth_stamp);
         }
         integration_rate_limiter_->markIntegrated(mapping_input_time);
+        last_map_stamp_ = depth_message->header.stamp;
       }
       last_valid_mapping_input_time_ = mapping_input_time;
       has_valid_mapping_input_ = true;
@@ -921,13 +1116,7 @@ class LocalMappingNode {
     const double now = stamp.toSec();
     observeCurrentTime(now);
     last_health_result_ = health_monitor_->evaluate(now);
-    const double fusion_timeout =
-        std::min(config_.depth_timeout, config_.odom_timeout);
-    const bool fusion_fresh =
-        has_valid_mapping_input_ && finite(now) &&
-        finite(last_valid_mapping_input_time_) &&
-        now >= last_valid_mapping_input_time_ &&
-        now - last_valid_mapping_input_time_ <= fusion_timeout;
+    const bool current_map_healthy = mapHealthy(last_health_result_, now);
 
     search_msgs::PerceptionHealth health;
     health.header.stamp = stamp;
@@ -935,13 +1124,12 @@ class LocalMappingNode {
     health.depth_healthy = last_health_result_.depth_healthy;
     health.odom_healthy = last_health_result_.odom_healthy;
     health.synchronized = last_health_result_.synchronized;
-    health.map_healthy =
-        last_health_result_.healthy && last_fusion_valid_ && fusion_fresh;
+    health.map_healthy = current_map_healthy;
     health.valid_depth_ratio = last_health_result_.valid_depth_ratio;
     health.dropped_frames = health_monitor_->droppedFrames();
     health.fault_code = last_health_result_.fault_code;
     if (last_health_result_.healthy && last_fusion_valid_ &&
-        has_valid_mapping_input_ && !fusion_fresh) {
+        has_valid_mapping_input_ && !current_map_healthy) {
       health.fault_code = "SYNC_ERROR";
     } else if (!last_fusion_valid_ &&
                (last_health_result_.healthy ||
@@ -988,10 +1176,13 @@ class LocalMappingNode {
   message_filters::Subscriber<nav_msgs::Odometry> odom_subscriber_;
   std::unique_ptr<Synchronizer> synchronizer_;
   ros::Subscriber boxes_subscriber_;
+  ros::Subscriber generation_subscriber_;
   ros::Subscriber health_depth_subscriber_;
   ros::Subscriber health_odom_subscriber_;
+  ros::ServiceServer trajectory_server_;
 
   ros::Publisher planner_depth_publisher_;
+  ros::Publisher planner_pose_publisher_;
   ros::Publisher static_cloud_publisher_;
   ros::Publisher dynamic_cloud_publisher_;
   ros::Publisher health_publisher_;
@@ -1005,6 +1196,8 @@ class LocalMappingNode {
   bool last_fusion_valid_;
   bool has_valid_mapping_input_;
   double last_valid_mapping_input_time_;
+  ros::Time last_map_stamp_;
+  std::uint64_t task_generation_{0u};
   std::string last_mapping_fault_;
   darknet_ros_msgs::BoundingBoxesConstPtr cached_boxes_;
   ros::Time cached_boxes_stamp_;

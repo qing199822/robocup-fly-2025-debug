@@ -8,11 +8,13 @@ import rospy
 import rostest
 import tf2_ros
 from darknet_ros_msgs.msg import BoundingBox, BoundingBoxes
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from search_msgs.msg import LocalClearance, PerceptionHealth
+from search_msgs.srv import ValidateTrajectory, ValidateTrajectoryRequest
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+from std_msgs.msg import UInt64
 
 
 class LocalMappingNodeTest(unittest.TestCase):
@@ -22,6 +24,7 @@ class LocalMappingNodeTest(unittest.TestCase):
     def setUp(self):
         self._lock = threading.Lock()
         self._planner_depth = None
+        self._planner_pose = None
         self._static_cloud = None
         self._dynamic_cloud = None
         self._health = None
@@ -46,12 +49,24 @@ class LocalMappingNodeTest(unittest.TestCase):
             BoundingBoxes,
             queue_size=1,
         )
+        self._generation_pub = rospy.Publisher(
+            "/test_drone_0/navigation/task_generation",
+            UInt64,
+            queue_size=1,
+            latch=True,
+        )
 
         self._subscribers = [
             rospy.Subscriber(
                 "/test_drone_0/local_mapping/planner_depth",
                 Image,
                 self._store("_planner_depth"),
+                queue_size=1,
+            ),
+            rospy.Subscriber(
+                "/test_drone_0/local_mapping/planner_pose",
+                PoseStamped,
+                self._store("_planner_pose"),
                 queue_size=1,
             ),
             rospy.Subscriber(
@@ -109,12 +124,22 @@ class LocalMappingNodeTest(unittest.TestCase):
         with self._lock:
             return getattr(self, attribute)
 
-    def _make_odom(self, stamp, parent_frame="map", child_frame="base_link"):
+    def _make_odom(
+        self,
+        stamp,
+        parent_frame="map",
+        child_frame="base_link",
+        position_x=0.0,
+        position_y=0.0,
+        position_z=3.0,
+    ):
         odom = Odometry()
         odom.header.stamp = stamp
         odom.header.frame_id = parent_frame
         odom.child_frame_id = child_frame
-        odom.pose.pose.position.z = 3.0
+        odom.pose.pose.position.x = position_x
+        odom.pose.pose.position.y = position_y
+        odom.pose.pose.position.z = position_z
         odom.pose.pose.orientation.w = 1.0
         return odom
 
@@ -206,6 +231,9 @@ class LocalMappingNodeTest(unittest.TestCase):
         info_frame="test_camera",
         odom_parent="map",
         odom_child="base_link",
+        odom_x=0.0,
+        odom_y=0.0,
+        odom_z=3.0,
         boxes="person",
         boxes_stamp=None,
         stamp=None,
@@ -219,7 +247,9 @@ class LocalMappingNodeTest(unittest.TestCase):
             )
         depth = self._make_depth(stamp, depth_mm, depth_frame)
         camera_info = self._make_camera_info(stamp, info_frame)
-        odom = self._make_odom(stamp, odom_parent, odom_child)
+        odom = self._make_odom(
+            stamp, odom_parent, odom_child, odom_x, odom_y, odom_z
+        )
 
         self._depth_pub.publish(depth)
         self._camera_info_pub.publish(camera_info)
@@ -315,17 +345,34 @@ class LocalMappingNodeTest(unittest.TestCase):
         )
 
     def _assert_frame_error(self, message, **kwargs):
-        planner_stamp = self._snapshot("_planner_depth").header.stamp
+        planner_depth = self._snapshot("_planner_depth")
+        planner_pose = self._snapshot("_planner_pose")
+        self.assertIsNotNone(planner_depth)
+        self.assertIsNotNone(planner_pose)
+        planner_depth_stamp = planner_depth.header.stamp
+        planner_pose_stamp = planner_pose.header.stamp
         dynamic_points = self._cloud_points("_dynamic_cloud")
         stamp = rospy.Time.now()
         self._prime_box_cache(stamp)
         self._publish_synchronized_inputs(stamp=stamp, boxes=None, **kwargs)
-        self._wait_for_mapping_publications_after_planner(
-            planner_stamp, message
+        self._wait_for(
+            lambda: not self._snapshot("_health").map_healthy
+            and self._snapshot("_health").fault_code == "FRAME_ERROR",
+            message + " did not report FRAME_ERROR",
         )
         health = self._snapshot("_health")
         self.assertFalse(health.map_healthy, message)
         self.assertEqual("FRAME_ERROR", health.fault_code, message)
+        self.assertEqual(
+            planner_depth_stamp,
+            self._snapshot("_planner_depth").header.stamp,
+            message + ": rejected frame updated planner depth",
+        )
+        self.assertEqual(
+            planner_pose_stamp,
+            self._snapshot("_planner_pose").header.stamp,
+            message + ": rejected frame updated planner pose",
+        )
         self.assertTrue(
             self._cloud_points("_dynamic_cloud").issubset(dynamic_points),
             message + ": the rejected frame added a dynamic voxel",
@@ -339,13 +386,9 @@ class LocalMappingNodeTest(unittest.TestCase):
             "initial mapping publications were not available",
         )
 
-        planner_stamp = rospy.Time(0)
         static_before = self._cloud_points("_static_cloud")
         dynamic_before = self._cloud_points("_dynamic_cloud")
         self._publish_inputs_for(0.35, depth_mm=4200, boxes=None)
-        self._wait_for_mapping_publications_after_planner(
-            planner_stamp, "depth without BoundingBoxes"
-        )
         self.assertTrue(
             self._cloud_points("_static_cloud").issubset(static_before),
             "depth without BoundingBoxes added a static voxel",
@@ -360,7 +403,6 @@ class LocalMappingNodeTest(unittest.TestCase):
             "depth without BoundingBoxes did not report SYNC_ERROR",
         )
 
-        planner_stamp = self._snapshot("_planner_depth").header.stamp
         static_before = self._cloud_points("_static_cloud")
         dynamic_before = self._cloud_points("_dynamic_cloud")
         stale_boxes_stamp = rospy.Time.now() - rospy.Duration(1.0)
@@ -369,9 +411,6 @@ class LocalMappingNodeTest(unittest.TestCase):
             depth_mm=5200,
             boxes="person",
             boxes_stamp=stale_boxes_stamp,
-        )
-        self._wait_for_mapping_publications_after_planner(
-            planner_stamp, "depth with stale BoundingBoxes"
         )
         self.assertTrue(
             self._cloud_points("_static_cloud").issubset(static_before),
@@ -619,6 +658,102 @@ class LocalMappingNodeTest(unittest.TestCase):
             self._snapshot("_health").dropped_frames,
             "a delayed raw/sync duplicate depth frame was counted twice",
         )
+
+    def test_trajectory_validation_and_synchronized_planner_pose(self):
+        service_name = "/test_drone_0/local_mapping/validate_trajectory"
+        rospy.wait_for_service(service_name, timeout=3.0)
+        validate = rospy.ServiceProxy(service_name, ValidateTrajectory)
+
+        self._generation_pub.publish(UInt64(data=7))
+        rospy.sleep(0.1)
+        self._publish_inputs_for(
+            0.5, depth_mm=4000, boxes="empty", odom_x=-1.0
+        )
+        self._publish_inputs_for(
+            0.5, depth_mm=3000, boxes="empty", odom_x=0.0
+        )
+        self._wait_for(
+            lambda: self._snapshot("_health") is not None
+            and self._snapshot("_health").map_healthy
+            and self._snapshot("_planner_depth") is not None
+            and self._snapshot("_planner_pose") is not None,
+            "healthy synchronized planner inputs were not published",
+        )
+
+        planner_depth = self._snapshot("_planner_depth")
+        planner_pose = self._snapshot("_planner_pose")
+        self.assertEqual(planner_depth.header.stamp, planner_pose.header.stamp)
+        self.assertEqual("map", planner_pose.header.frame_id)
+        self.assertAlmostEqual(0.0, planner_pose.pose.position.x)
+        self.assertAlmostEqual(0.0, planner_pose.pose.position.y)
+        self.assertAlmostEqual(3.0, planner_pose.pose.position.z)
+        self.assertAlmostEqual(0.5, planner_pose.pose.orientation.x)
+        self.assertAlmostEqual(0.5, planner_pose.pose.orientation.y)
+        self.assertAlmostEqual(0.5, planner_pose.pose.orientation.z)
+        self.assertAlmostEqual(0.5, planner_pose.pose.orientation.w)
+
+        def point(x, y=0.0, z=3.0):
+            return Point(x=x, y=y, z=z)
+
+        def call(samples, frame="map", generation=7, stamp=None):
+            request = ValidateTrajectoryRequest()
+            request.header.stamp = rospy.Time.now() if stamp is None else stamp
+            request.header.frame_id = frame
+            request.task_generation = generation
+            request.samples = samples
+            return validate(request)
+
+        def assert_rejected(fault_code, **kwargs):
+            response = call(**kwargs)
+            self.assertFalse(response.valid)
+            self.assertEqual(fault_code, response.fault_code)
+            self.assertEqual(0.0, response.min_clearance_m)
+            return response
+
+        known_samples = [point(0.5 + 0.15 * index) for index in range(5)]
+        known = call(known_samples)
+        self.assertTrue(known.valid, known.fault_code)
+        self.assertEqual("OK", known.fault_code)
+        self.assertEqual(7, known.task_generation)
+        self.assertGreater(known.map_stamp.to_sec(), 0.0)
+        self.assertGreaterEqual(known.min_clearance_m, 0.10)
+
+        unknown_samples = [point(0.5, 0.15 * index) for index in range(11)]
+        assert_rejected("UNKNOWN", samples=unknown_samples)
+
+        occupied_samples = [point(0.5 + 0.15 * index) for index in range(16)]
+        assert_rejected("OCCUPIED", samples=occupied_samples)
+        assert_rejected("EMPTY_TRAJECTORY", samples=[])
+        assert_rejected("STALE_GENERATION", samples=known_samples, generation=6)
+        assert_rejected("WRONG_FRAME", samples=known_samples, frame="odom")
+        assert_rejected(
+            "STALE_TRAJECTORY",
+            samples=known_samples,
+            stamp=rospy.Time.now() - rospy.Duration(0.6),
+        )
+        assert_rejected(
+            "FUTURE_TRAJECTORY",
+            samples=known_samples,
+            stamp=rospy.Time.now() + rospy.Duration(0.3),
+        )
+        assert_rejected(
+            "START_DEVIATION", samples=[point(1.0), point(1.1)]
+        )
+        assert_rejected(
+            "HEIGHT_LIMIT", samples=[point(0.5), point(0.5, z=1.9)]
+        )
+        assert_rejected("SAMPLE_GAP", samples=[point(0.5), point(0.8)])
+        assert_rejected(
+            "INVALID_REQUEST",
+            samples=[point(float("nan")), point(0.1)],
+        )
+
+        self._wait_for(
+            lambda: not self._snapshot("_health").map_healthy,
+            "mapping did not become unhealthy after input stopped",
+            timeout=2.0,
+        )
+        assert_rejected("MAP_UNHEALTHY", samples=known_samples)
 
 
 if __name__ == "__main__":

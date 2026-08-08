@@ -15,7 +15,15 @@ publish_rate: 5.0
 search_altitude: 3.0
 max_frontier_distance: 8.0
 frontier_resolution: 0.25
+vehicle_horizontal_radius: 0.35
 vehicle_vertical_radius: 0.20
+trajectory_safety_margin: 0.10
+trajectory_max_age: 0.50
+trajectory_max_future: 0.20
+trajectory_start_tolerance: 0.75
+trajectory_max_sample_gap: 0.20
+min_search_altitude: 2.00
+max_search_altitude: 4.00
 min_frontier_cluster_cells: 2
 max_clearance_distance: 8.0
 base_frame: base_link
@@ -27,6 +35,9 @@ camera_info_topic: /typhoon_h480_0/realsense/depth_camera/depth/camera_info
 odom_topic: /typhoon_h480_0/global_odom
 bounding_boxes_topic: /typhoon_h480_0/yolo11n/bounding_boxes
 planner_depth_topic: /typhoon_h480_0/local_mapping/planner_depth
+planner_pose_topic: /typhoon_h480_0/local_mapping/planner_pose
+validate_trajectory_service: /typhoon_h480_0/local_mapping/validate_trajectory
+task_generation_topic: /typhoon_h480_0/navigation/task_generation
 static_cloud_topic: /typhoon_h480_0/local_mapping/static_cloud
 dynamic_cloud_topic: /typhoon_h480_0/local_mapping/dynamic_cloud
 health_topic: /typhoon_h480_0/local_mapping/health

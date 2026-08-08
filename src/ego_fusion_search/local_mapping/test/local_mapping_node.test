@@ -11,6 +11,12 @@
            value="/test_drone_0/yolo11n/bounding_boxes"/>
     <param name="planner_depth_topic"
            value="/test_drone_0/local_mapping/planner_depth"/>
+    <param name="planner_pose_topic"
+           value="/test_drone_0/local_mapping/planner_pose"/>
+    <param name="validate_trajectory_service"
+           value="/test_drone_0/local_mapping/validate_trajectory"/>
+    <param name="task_generation_topic"
+           value="/test_drone_0/navigation/task_generation"/>
     <param name="static_cloud_topic"
            value="/test_drone_0/local_mapping/static_cloud"/>
     <param name="dynamic_cloud_topic"
@@ -28,7 +34,7 @@
     <param name="min_valid_depth_ratio" value="0.20"/>
     <param name="depth_min_m" value="0.20"/>
     <param name="depth_max_m" value="8.00"/>
-    <param name="pixel_stride" value="4"/>
+    <param name="pixel_stride" value="1"/>
     <param name="mask_margin_pixels" value="0"/>
     <param name="voxel_resolution" value="0.20"/>
     <param name="occupied_hits" value="2"/>
@@ -39,6 +45,14 @@
     <param name="max_frontier_distance" value="2.0"/>
     <param name="frontier_resolution" value="0.25"/>
     <param name="vehicle_vertical_radius" value="0.20"/>
+    <param name="vehicle_horizontal_radius" value="0.35"/>
+    <param name="trajectory_safety_margin" value="0.10"/>
+    <param name="trajectory_max_age" value="0.50"/>
+    <param name="trajectory_max_future" value="0.20"/>
+    <param name="trajectory_start_tolerance" value="0.75"/>
+    <param name="trajectory_max_sample_gap" value="0.20"/>
+    <param name="min_search_altitude" value="2.00"/>
+    <param name="max_search_altitude" value="4.00"/>
     <param name="min_frontier_cluster_cells" value="2"/>
     <param name="max_clearance_distance" value="2.0"/>
     <param name="base_frame" value="base_link"/>
@@ -47,5 +61,5 @@
   </node>
 
   <test test-name="local_mapping_node_test" pkg="local_mapping"
-        type="test_local_mapping_node.py" time-limit="20"/>
+        type="test_local_mapping_node.py" time-limit="45"/>
 </launch>
