@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="ego_adapter" type="ego_adapter_node" name="ego_adapter_under_test"
+        required="true" output="screen">
+    <rosparam command="load" file="$(find ego_adapter)/config/single_drone.yaml"/>
+    <param name="position_command_topic" value="/test/ego/position_cmd"/>
+    <param name="bspline_topic" value="/test/ego/bspline"/>
+    <param name="odom_topic" value="/test/odom"/>
+    <param name="health_topic" value="/test/health"/>
+    <param name="clearance_topic" value="/test/clearance"/>
+    <param name="generation_topic" value="/test/generation"/>
+    <param name="mux_selected_topic" value="/test/mux/selected"/>
+    <param name="validate_trajectory_service" value="/test/validate"/>
+    <param name="command_topic" value="/test/navigator/cmd_vel"/>
+    <param name="status_topic" value="/test/status"/>
+    <param name="navigator_topic" value="/test/navigator/cmd_vel"/>
+    <param name="health_timeout" value="0.15"/>
+    <param name="odom_timeout" value="0.15"/>
+  </node>
+  <test test-name="ego_adapter_node_test" pkg="ego_adapter"
+        type="test_ego_adapter_node.py" time-limit="35"/>
+</launch>

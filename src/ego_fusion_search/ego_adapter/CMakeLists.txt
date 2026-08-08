@@ -33,21 +33,36 @@ catkin_package(
 
 include_directories(include ${catkin_INCLUDE_DIRS})
 
-add_library(ego_command_policy src/command_policy.cpp)
+add_library(ego_command_policy
+  src/bspline_sampler.cpp
+  src/command_policy.cpp
+)
 add_dependencies(ego_command_policy ${catkin_EXPORTED_TARGETS})
 target_link_libraries(ego_command_policy ${catkin_LIBRARIES})
 
+add_executable(ego_adapter_node src/ego_adapter_node.cpp)
+add_dependencies(ego_adapter_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(
+  ego_adapter_node ego_command_policy ${catkin_LIBRARIES})
+
 if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(command_policy_test test/command_policy_test.cpp)
-  if(TARGET command_policy_test)
-    add_dependencies(command_policy_test ${catkin_EXPORTED_TARGETS})
-    target_link_libraries(
-      command_policy_test ego_command_policy ${catkin_LIBRARIES})
-  endif()
+  find_package(rostest REQUIRED)
+  foreach(test_target command_policy_test bspline_sampler_test)
+    catkin_add_gtest(${test_target} test/${test_target}.cpp)
+    if(TARGET ${test_target})
+      add_dependencies(${test_target} ${catkin_EXPORTED_TARGETS})
+      target_link_libraries(
+        ${test_target} ego_command_policy ${catkin_LIBRARIES})
+    endif()
+  endforeach()
+  add_rostest(test/ego_adapter_node.test)
 endif()
 
-install(TARGETS ego_command_policy
+install(TARGETS ego_command_policy ego_adapter_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
