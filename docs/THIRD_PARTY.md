@@ -7,6 +7,7 @@
 | `darknet_ros_msgs` | `leggedrobotics/darknet_ros`，1.1.4 | BSD；消息、构建文件和 `package.xml` 按 ownership 清单核验 |
 | `gazebo_ros_actor_plugin` | XTDrone，提交 `8e88116dc15a19e5eba06300897fcfec4ab2da11` | Apache-2.0；与外部 XTDrone 树逐字节核验 |
 | `ActorCollisionsPlugin` | XTDrone，提交 `8e88116dc15a19e5eba06300897fcfec4ab2da11` | Apache-2.0；源文件来自外部只读树，在本工作空间 out-of-tree 构建 |
+| `EGO-Planner-Swarm`（外部运行依赖，不进入本仓库） | `ZJU-FAST-Lab/ego-planner-swarm`，提交 `92fe9f7227b2da819133eb8e0e8c7fc000f6ae20` | GPL-3.0；`scripts/check_ego_external.py` 核验提交、干净工作树和接口文件 |
 | `src/yolo/yolo11n_942.pt` | 仓库既有 YOLO 权重文件；原有说明未给出可核实的发布授权 | `NOASSERTION`；再分发前须取得权利人许可 |
 
 Actor 插件的源码副本只用于本仓库构建接口，不能据此修改 XTDrone 外部源。PX4、XTDrone、Gazebo 和官方模型本身是安装环境依赖，不是本仓库重新许可的内容。
