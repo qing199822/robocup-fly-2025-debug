@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>search_coordinator</name>
+  <version>0.1.0</version>
+  <description>Generation-safe coordinator for known-free EGO search goals.</description>
+  <maintainer email="qing199822@users.noreply.github.com">ZZU FLY Team</maintainer>
+  <license>LicenseRef-Team-Code</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+</package>
