@@ -21,6 +21,14 @@ struct Clearance {
   double metres;
 };
 
+enum class SweepFault { NONE, EMPTY, NON_FINITE, UNKNOWN, OCCUPIED };
+
+struct SweepResult {
+  bool valid;
+  SweepFault fault;
+  double min_clearance_m;
+};
+
 class VoxelMap {
  public:
   VoxelMap(double resolution, int occupied_hits, int free_hits,
@@ -34,6 +42,10 @@ class VoxelMap {
   CellState stateAt(const Vec3& point, double now) const;
   Clearance axisClearance(const Vec3& origin, const Vec3& unit_axis,
                           double max_distance, double now) const;
+  SweepResult validateSweptVolume(const std::vector<Vec3>& samples,
+                                  double horizontal_radius,
+                                  double vertical_radius,
+                                  double safety_margin, double now) const;
   std::vector<Vec3> staticOccupiedPoints(double now) const;
   std::vector<Vec3> dynamicOccupiedPoints(double now) const;
 

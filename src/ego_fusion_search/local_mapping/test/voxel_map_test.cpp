@@ -10,6 +10,7 @@
 namespace {
 
 using local_mapping::CellState;
+using local_mapping::SweepFault;
 using local_mapping::Vec3;
 using local_mapping::VoxelMap;
 
@@ -339,6 +340,113 @@ TEST(VoxelMap, DynamicPointQueryPrunesEveryExpiredVoxel) {
         {static_cast<double>(index) + 0.1, 0.1, 0.1}, 9.0);
   }
   EXPECT_TRUE(map.dynamicOccupiedPoints(10.5).empty());
+}
+
+TEST(VoxelMap, SweptVolumeRequiresEveryVoxelToBeKnownAndFree) {
+  VoxelMap map(0.2, 1, 1, 1.0);
+  for (int y = -3; y <= 2; ++y) {
+    for (int z = 13; z <= 16; ++z) {
+      const double centre_y = (y + 0.5) * 0.2;
+      const double centre_z = (z + 0.5) * 0.2;
+      map.integrateStaticRay({0.1, centre_y, centre_z},
+                             {3.1, centre_y, centre_z});
+    }
+  }
+  for (int x = 0; x <= 14; ++x) {
+    for (int y = -3; y <= 2; ++y) {
+      for (int z = 13; z <= 16; ++z) {
+        SCOPED_TRACE(testing::Message()
+                     << "free voxel key=" << x << ',' << y << ',' << z);
+        EXPECT_EQ(CellState::FREE,
+                  map.stateAt({(x + 0.5) * 0.2, (y + 0.5) * 0.2,
+                               (z + 0.5) * 0.2},
+                              0.0));
+      }
+    }
+  }
+
+  const std::vector<Vec3> samples{{0.5, 0.0, 3.0}, {2.5, 0.0, 3.0}};
+  const auto result =
+      map.validateSweptVolume(samples, 0.35, 0.25, 0.10, 0.0);
+
+  EXPECT_TRUE(result.valid);
+  EXPECT_EQ(SweepFault::NONE, result.fault);
+  EXPECT_GT(result.min_clearance_m, 0.0);
+}
+
+TEST(VoxelMap, SweptVolumeRejectsUnknownStaticAndDynamicOccupancy) {
+  VoxelMap unknown(0.2, 1, 1, 1.0);
+  const auto unknown_result = unknown.validateSweptVolume(
+      {{0.0, 0.0, 3.0}}, 0.0, 0.0, 0.0, 0.0);
+  EXPECT_FALSE(unknown_result.valid);
+  EXPECT_EQ(SweepFault::UNKNOWN, unknown_result.fault);
+
+  VoxelMap static_occupied(0.2, 1, 1, 1.0);
+  static_occupied.integrateStaticRay({1.0, 0.0, 3.0}, {1.0, 0.0, 3.0});
+  const auto static_result = static_occupied.validateSweptVolume(
+      {{1.0, 0.0, 3.0}}, 0.0, 0.0, 0.0, 0.0);
+  EXPECT_FALSE(static_result.valid);
+  EXPECT_EQ(SweepFault::OCCUPIED, static_result.fault);
+
+  VoxelMap dynamic_occupied(0.2, 1, 1, 1.0);
+  dynamic_occupied.integrateDynamicPoint({1.0, 0.0, 3.0}, 5.0);
+  const auto dynamic_result = dynamic_occupied.validateSweptVolume(
+      {{1.0, 0.0, 3.0}}, 0.0, 0.0, 0.0, 5.1);
+  EXPECT_FALSE(dynamic_result.valid);
+  EXPECT_EQ(SweepFault::OCCUPIED, dynamic_result.fault);
+}
+
+TEST(VoxelMap, SweptVolumeRejectsOccupiedVoxelBoxCornerIntersection) {
+  VoxelMap map(1.0, 1, 1, 1.0);
+  for (const Vec3& origin : std::vector<Vec3>{{0.5, 0.5, 0.5},
+                                               {1.5, 0.5, 0.5},
+                                               {0.5, 1.5, 0.5},
+                                               {1.5, 1.5, 0.5}}) {
+    map.integrateStaticRay(origin, {origin.x, origin.y, 3.5});
+  }
+  map.integrateDynamicPoint({1.5, 1.5, 0.5}, 2.0);
+
+  const auto result =
+      map.validateSweptVolume({{0.9, 0.9, 0.5}}, 0.10, 0.05, 0.05, 2.1);
+
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(SweepFault::OCCUPIED, result.fault);
+}
+
+TEST(VoxelMap, RejectsInvalidSweptVolumeInputs) {
+  VoxelMap map(0.2, 1, 1, 1.0);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  EXPECT_THROW(map.validateSweptVolume({}, 0.1, 0.1, 0.1, 0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{nan, 0.0, 0.0}}, 0.1, 0.1, 0.1,
+                                       0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{0.0, 0.0, 0.0}}, -0.1, 0.1, 0.1,
+                                       0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{0.0, 0.0, 0.0}}, 0.1, -0.1, 0.1,
+                                       0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{0.0, 0.0, 0.0}}, 0.1, 0.1, -0.1,
+                                       0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{0.0, 0.0, 0.0}}, inf, 0.1, 0.1,
+                                       0.0),
+               std::invalid_argument);
+  EXPECT_THROW(map.validateSweptVolume({{0.0, 0.0, 0.0}}, 0.1, 0.1, 0.1,
+                                       nan),
+               std::invalid_argument);
+}
+
+TEST(VoxelMap, RejectsUnrepresentableSweptVolumeInterpolationCount) {
+  VoxelMap map(std::numeric_limits<double>::min(), 1, 1, 1.0);
+
+  EXPECT_THROW(map.validateSweptVolume(
+                   {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}}, 0.0, 0.0, 0.0,
+                   0.0),
+               std::invalid_argument);
 }
 
 TEST(VoxelMap, RejectsInvalidConfiguration) {

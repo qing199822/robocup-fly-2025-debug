@@ -334,6 +334,122 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
   return Clearance{true, max_distance};
 }
 
+SweepResult VoxelMap::validateSweptVolume(
+    const std::vector<Vec3>& samples, double horizontal_radius,
+    double vertical_radius, double safety_margin, double now) const {
+  if (samples.empty()) {
+    throw std::invalid_argument("swept volume samples must not be empty");
+  }
+  if (!std::isfinite(horizontal_radius) || horizontal_radius < 0.0 ||
+      !std::isfinite(vertical_radius) || vertical_radius < 0.0 ||
+      !std::isfinite(safety_margin) || safety_margin < 0.0 ||
+      !std::isfinite(now)) {
+    throw std::invalid_argument("invalid swept volume query");
+  }
+  for (const Vec3& sample : samples) {
+    if (!isFinite(sample)) {
+      throw std::invalid_argument("swept volume samples must be finite");
+    }
+  }
+
+  const double radius = horizontal_radius + safety_margin;
+  const double half_height = vertical_radius + safety_margin;
+  if (!std::isfinite(radius) || !std::isfinite(half_height)) {
+    throw std::invalid_argument("swept volume dimensions are too large");
+  }
+
+  std::vector<std::size_t> interpolation_counts;
+  interpolation_counts.reserve(samples.size() - 1u);
+  for (std::size_t segment = 1u; segment < samples.size(); ++segment) {
+    const Vec3& start = samples[segment - 1u];
+    const Vec3& end = samples[segment];
+    const long double dx =
+        static_cast<long double>(end.x) - static_cast<long double>(start.x);
+    const long double dy =
+        static_cast<long double>(end.y) - static_cast<long double>(start.y);
+    const long double dz =
+        static_cast<long double>(end.z) - static_cast<long double>(start.z);
+    interpolation_counts.push_back(
+        sampleCount(std::sqrt(dx * dx + dy * dy + dz * dz)));
+  }
+
+  const auto validate_centre = [this, radius, half_height, safety_margin,
+                                now](const Vec3& centre) {
+    const Key lower = keyFor({centre.x - radius, centre.y - radius,
+                              centre.z - half_height});
+    const Key upper = keyFor({centre.x + radius, centre.y + radius,
+                              centre.z + half_height});
+    const double half_voxel = resolution_ / 2.0;
+
+    for (std::int64_t x = lower.x;; ++x) {
+      for (std::int64_t y = lower.y;; ++y) {
+        for (std::int64_t z = lower.z;; ++z) {
+          const Key key{x, y, z};
+          const Vec3 voxel_centre = centreFor(key);
+          const double dx = std::max(
+              0.0, std::abs(voxel_centre.x - centre.x) - half_voxel);
+          const double dy = std::max(
+              0.0, std::abs(voxel_centre.y - centre.y) - half_voxel);
+          const double dz = std::max(
+              0.0, std::abs(voxel_centre.z - centre.z) - half_voxel);
+          if (std::hypot(dx, dy) <= radius && dz <= half_height) {
+            const CellState state = stateForKey(key, now);
+            if (state != CellState::FREE) {
+              return SweepResult{
+                  false,
+                  state == CellState::UNKNOWN ? SweepFault::UNKNOWN
+                                              : SweepFault::OCCUPIED,
+                  0.0};
+            }
+          }
+          if (z == upper.z) {
+            break;
+          }
+        }
+        if (y == upper.y) {
+          break;
+        }
+      }
+      if (x == upper.x) {
+        break;
+      }
+    }
+    return SweepResult{true, SweepFault::NONE, safety_margin};
+  };
+
+  SweepResult result = validate_centre(samples.front());
+  if (!result.valid) {
+    return result;
+  }
+  for (std::size_t segment = 1; segment < samples.size(); ++segment) {
+    const Vec3& start = samples[segment - 1u];
+    const Vec3& end = samples[segment];
+    const long double dx =
+        static_cast<long double>(end.x) - static_cast<long double>(start.x);
+    const long double dy =
+        static_cast<long double>(end.y) - static_cast<long double>(start.y);
+    const long double dz =
+        static_cast<long double>(end.z) - static_cast<long double>(start.z);
+    const std::size_t interpolation_count = interpolation_counts[segment - 1u];
+    for (std::size_t index = 1u; index <= interpolation_count; ++index) {
+      const long double fraction =
+          static_cast<long double>(index) / interpolation_count;
+      const Vec3 centre{
+          static_cast<double>(static_cast<long double>(start.x) +
+                              fraction * dx),
+          static_cast<double>(static_cast<long double>(start.y) +
+                              fraction * dy),
+          static_cast<double>(static_cast<long double>(start.z) +
+                              fraction * dz)};
+      result = validate_centre(centre);
+      if (!result.valid) {
+        return result;
+      }
+    }
+  }
+  return SweepResult{true, SweepFault::NONE, safety_margin};
+}
+
 std::vector<Vec3> VoxelMap::staticOccupiedPoints(double now) const {
   if (!std::isfinite(now)) {
     throw std::invalid_argument("query timestamp must be finite");
