@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+  <arg name="_validated_vehicle"
+       value="$(eval vehicle_type + '_' + str(drone_id) if vehicle_type == 'typhoon_h480' and str(drone_id) == '0' else int('search_single.launch supports only typhoon_h480_0'))"/>
+
+  <node pkg="search_coordinator" type="search_coordinator_node"
+        name="search_coordinator_typhoon_h480_0"
+        required="true" output="screen">
+    <rosparam command="load"
+              file="$(find search_coordinator)/config/single_drone.yaml"/>
+  </node>
+</launch>

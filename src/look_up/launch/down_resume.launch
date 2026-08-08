@@ -10,6 +10,15 @@
     <!-- ========== 全局参数 ========== -->
     <arg name="num_drones" default="6" />
     <arg name="mission_filename" default="mission_down.json" />
+    <arg name="navigation_mode" default="static_patrol" />
+    <arg name="goal_source" default="mission" />
+    <arg name="ego_dir" default="/home/wangtao/robocup_fly/external/ego-planner-swarm" />
+    <arg name="_validated_mode"
+         value="$(eval navigation_mode if navigation_mode in ['ego', 'static_patrol'] else int('navigation_mode is not implemented in the single-drone EGO phase'))" />
+    <arg name="_validated_goal_source"
+         value="$(eval goal_source if goal_source in ['mission', 'manual'] else int('goal_source must be mission or manual'))" />
+    <arg name="active_num_drones"
+         value="$(eval 1 if navigation_mode == 'ego' else int(num_drones))" />
 
     <!-- ========== 1. 定位 ========== -->
     <include file="$(find pose_init)/launch/pose.launch" />
@@ -25,7 +34,7 @@
 
     <!-- ========== 4. TF 变换树 ========== -->
     <include file="$(find transform_tree)/launch/tf.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+        <arg name="num_drones" value="$(arg active_num_drones)" />
     </include>
 
     <!-- ========== 5. 目标管理 ========== -->
@@ -33,25 +42,36 @@
 
     <!-- ========== 6. 最终速度安全过滤 ========== -->
     <include file="$(find safety_filter)/launch/safety_filter_swarm.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+        <arg name="num_drones" value="$(arg active_num_drones)" />
     </include>
 
     <!-- ========== 7. 总控节点 ========== -->
     <include file="$(find look_up)/launch/spawn_mux_swarm.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+        <arg name="num_drones" value="$(arg active_num_drones)" />
     </include>
 
     <!-- ========== 8. 起飞命令 ========== -->
-    <include file="$(find fly)/launch/fly.launch" />
-
-    <!-- ========== 9. 导航 ========== -->
-    <include file="$(find simple_navigator)/launch/nav.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+    <include file="$(find fly)/launch/fly.launch">
+        <arg name="drone_quantity" value="$(arg active_num_drones)" />
     </include>
 
+    <!-- ========== 9. 导航 ========== -->
+    <group if="$(eval navigation_mode == 'ego')">
+        <include file="$(find look_up)/launch/navigation_single.launch">
+            <arg name="navigation_mode" value="ego" />
+            <arg name="ego_dir" value="$(arg ego_dir)" />
+        </include>
+    </group>
+    <group if="$(eval navigation_mode == 'static_patrol')">
+        <include file="$(find simple_navigator)/launch/nav.launch">
+            <arg name="num_drones" value="$(arg active_num_drones)" />
+        </include>
+    </group>
+
     <!-- ========== 10. 定点巡航 ========== -->
-    <include file="$(find task_manager)/launch/task.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+    <include file="$(find task_manager)/launch/task.launch"
+             if="$(eval goal_source == 'mission')">
+        <arg name="num_drones" value="$(arg active_num_drones)" />
         <arg name="mission_filename" value="$(arg mission_filename)" />
     </include>
 
@@ -62,7 +82,7 @@
 
     <!-- ========== 12. 追踪节点 ========== -->
     <include file="$(find tracking)/launch/tracking.launch">
-        <arg name="num_drones" value="$(arg num_drones)" />
+        <arg name="num_drones" value="$(arg active_num_drones)" />
     </include>
 
     <!-- ========== 13. 坐标计算节点 (非roslaunch脚本，需单独处理) ========== -->

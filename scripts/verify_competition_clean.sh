@@ -9,6 +9,9 @@ XTDRONE_DIR="${XTDRONE_DIR:-$PROJECT_ROOT/XTDrone}"
 GAZEBO_MODELS_DIR="${GAZEBO_MODELS_DIR:-$PROJECT_ROOT/gazebo_models}"
 XTDRONE_PYTHONPATH="${XTDRONE_PYTHONPATH:-$PROJECT_ROOT/.xtdrone-python}"
 ROS_SETUP_FILE="${ROS_SETUP_FILE:-/opt/ros/noetic/setup.bash}"
+EGO_DIR="${EGO_DIR:-$PROJECT_ROOT/external/ego-planner-swarm}"
+EGO_SETUP_FILE="$EGO_DIR/devel/setup.bash"
+EGO_EXTERNAL_CHECKER="$SCRIPT_DIR/check_ego_external.py"
 PACKAGE_DIR="$WORKSPACE_DIR/src/competition_compliance"
 MANIFEST="$PACKAGE_DIR/config/official_manifest.json"
 OWNERSHIP="$PACKAGE_DIR/config/ownership.json"
@@ -131,6 +134,10 @@ snapshot_xtdrone_status() {
     || fail "找不到规范合规验证器：$PACKAGE_DIR/scripts/verify_full.py"
 [ -f "$MANIFEST" ] || fail "找不到规范官方清单：$MANIFEST"
 [ -f "$OWNERSHIP" ] || fail "找不到规范所有权清单：$OWNERSHIP"
+[ -f "$EGO_EXTERNAL_CHECKER" ] \
+    || fail "找不到 EGO-Planner-Swarm 固定版本检查器：$EGO_EXTERNAL_CHECKER"
+[ -r "$EGO_SETUP_FILE" ] \
+    || fail "找不到 EGO-Planner-Swarm 构建环境：$EGO_SETUP_FILE"
 
 # shellcheck disable=SC1090
 set +u
@@ -162,6 +169,15 @@ run_compliance_verifier "$STATIC_EVIDENCE"
 prepare_ros_log_directory
 export ROS_LOG_DIR
 python3 -m unittest discover -s "$WORKSPACE_DIR/tests" -p 'test_*.py'
+python3 "$EGO_EXTERNAL_CHECKER" --ego-dir "$EGO_DIR" \
+    || fail "EGO-Planner-Swarm 外部依赖核验失败。"
+# shellcheck disable=SC1090
+set +u
+if ! source "$EGO_SETUP_FILE"; then
+    set -u
+    fail "加载 EGO-Planner-Swarm 构建环境失败：$EGO_SETUP_FILE"
+fi
+set -u
 catkin_make -DCMAKE_BUILD_TYPE=Release
 bash "$SCRIPT_DIR/build_xtdrone_actor_collisions.sh"
 catkin_make run_tests

@@ -12,6 +12,7 @@ REQUIRED = (
     "src/planner/traj_utils/msg/Bspline.msg",
     "src/planner/plan_manage/launch/single_run_in_sim.launch",
     "src/planner/plan_manage/launch/advanced_param.xml",
+    "src/planner/plan_env/src/grid_map.cpp",
 )
 
 REQUIRED_FIELDS = {
@@ -35,6 +36,10 @@ REQUIRED_FIELDS = {
         "grid_map/fy",
         "grid_map/cx",
         "grid_map/cy",
+    ),
+    "src/planner/plan_env/src/grid_map.cpp": (
+        "TYPE_32FC1",
+        "CV_16UC1",
     ),
 }
 

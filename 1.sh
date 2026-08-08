@@ -2,8 +2,9 @@
 
 # ===================================================================
 # ROS / PX4 六机仿真一键启动脚本 - down_resume 版本
-# 用法: bash 1.sh [无人机数量] [任务文件名]
-# 常规任务: bash 1.sh 6 mission_down.json
+# 用法: bash 1.sh [无人机数量] [任务文件名] [导航模式] [目标来源]
+# 常规任务: bash 1.sh 6 mission_down.json static_patrol mission
+# EGO 手工目标: bash 1.sh 6 mission_down.json ego manual
 # BP 备份路线: bash 1.sh 6 mission_bp.json
 # 本脚本替代旧 bp.sh 的节点功能，但不创建 tmux 多窗格。
 # ===================================================================
@@ -27,6 +28,9 @@ OFFICIAL_WORLD="$PX4_DIR/Tools/sitl_gazebo/worlds/robocup.world"
 OFFICIAL_MANIFEST="$COMPLIANCE_PACKAGE_DIR/config/official_manifest.json"
 SENSOR_MOUNT_CONFIG="$COMPLIANCE_PACKAGE_DIR/config/sensor_mount.yaml"
 PROCESS_SUPERVISOR="$WORKSPACE_DIR/scripts/process_supervisor.py"
+EGO_DIR="${EGO_DIR:-$PROJECT_ROOT/external/ego-planner-swarm}"
+EGO_SETUP_FILE="$EGO_DIR/devel/setup.bash"
+EGO_EXTERNAL_CHECKER="$WORKSPACE_DIR/scripts/check_ego_external.py"
 PROCESS_SUPERVISOR_CLEANUP_FAILURE_STATUS=125
 SUPERVISOR_PYTHON="${SUPERVISOR_PYTHON:-/usr/bin/python3}"
 RUN_TMP_DIR=""
@@ -44,6 +48,8 @@ TEE_BIN="${TEE_BIN:-tee}"
 
 NUM_DRONES=${1:-6}
 MISSION_FILE=${2:-mission_down.json}
+NAVIGATION_MODE=${3:-static_patrol}
+GOAL_SOURCE=${4:-mission}
 SIMULATION_PID=""
 COMMUNICATION_PID=""
 MISSION_PID=""
@@ -342,6 +348,20 @@ validate_configuration() {
     validate_positive_integer CLEANUP_GRACE_SECONDS "$CLEANUP_GRACE_SECONDS" || return 1
     validate_positive_integer HELPER_SURVIVAL_SECONDS "$HELPER_SURVIVAL_SECONDS" || return 1
     validate_nonnegative_integer OFFBOARD_WARMUP_SECONDS "$OFFBOARD_WARMUP_SECONDS" || return 1
+    case "$NAVIGATION_MODE" in
+    static_patrol | ego | layered_2d) ;;
+    *)
+        echo "错误：导航模式必须是 static_patrol、ego 或 layered_2d，当前值：$NAVIGATION_MODE" >&2
+        return 1
+        ;;
+    esac
+    case "$GOAL_SOURCE" in
+    mission | manual) ;;
+    *)
+        echo "错误：目标来源必须是 mission 或 manual，当前值：$GOAL_SOURCE" >&2
+        return 1
+        ;;
+    esac
 }
 
 process_is_running() {
@@ -1408,8 +1428,22 @@ main() {
     require_file "$WORKSPACE_DIR/src/yolo/multi_solving.sh" "坐标计算脚本"
     require_file "$WORKSPACE_DIR/devel/lib/libActorCollisionsPlugin.so" "Gazebo 行人碰撞插件"
     require_file "$WORKSPACE_DIR/devel/lib/libros_actor_cmd_pose_plugin.so" "Gazebo 行人 ROS 控制插件"
+    if [ "$NAVIGATION_MODE" = ego ]; then
+        require_file "$EGO_SETUP_FILE" "EGO-Planner-Swarm 构建环境"
+        require_file "$EGO_EXTERNAL_CHECKER" "EGO-Planner-Swarm 固定版本检查器"
+    fi
 
     source "$ROS_SETUP_FILE"
+    if [ "$NAVIGATION_MODE" = ego ]; then
+        if ! python3 "$EGO_EXTERNAL_CHECKER" --ego-dir "$EGO_DIR"; then
+            echo "错误：EGO-Planner-Swarm 外部依赖核验失败。" >&2
+            return 1
+        fi
+        if ! source "$EGO_SETUP_FILE"; then
+            echo "错误：无法加载 EGO-Planner-Swarm 构建环境：$EGO_SETUP_FILE" >&2
+            return 1
+        fi
+    fi
     source "$WORKSPACE_DIR/devel/setup.bash"
     source "$PX4_DIR/Tools/setup_gazebo.bash" "$PX4_DIR" "$PX4_BUILD_DIR"
     source "$WORKSPACE_DIR/scripts/graphics_environment.sh"
@@ -1461,6 +1495,8 @@ main() {
     echo "  启动 PX4/Gazebo 六机仿真和 down_resume 任务"
     echo "  无人机数量: $NUM_DRONES"
     echo "  任务文件:   $MISSION_FILE"
+    echo "  导航模式:   $NAVIGATION_MODE"
+    echo "  目标来源:   $GOAL_SOURCE"
     echo "============================================"
 
     echo "启动 Gazebo、PX4 SITL 和 MAVROS..."
@@ -1483,7 +1519,9 @@ main() {
 
     echo "启动 down_resume 任务节点..."
     start_owned_group "任务节点" roslaunch look_up down_resume.launch \
-        num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE" || return 1
+        num_drones:="$NUM_DRONES" mission_filename:="$MISSION_FILE" \
+        navigation_mode:="$NAVIGATION_MODE" goal_source:="$GOAL_SOURCE" \
+        ego_dir:="$EGO_DIR" || return 1
     MISSION_PID="$LAST_STARTED_PID"
     supervise_mission || return 1
     mission_status="$LAST_PROCESS_STATUS"

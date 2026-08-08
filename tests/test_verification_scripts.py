@@ -79,6 +79,16 @@ class VerificationScriptsContractTest(unittest.TestCase):
             smoke_text.index('require_command "$command_name"'),
         )
 
+    def test_external_ego_is_checked_and_sourced_before_catkin_build(self):
+        text = FULL_VERIFIER.read_text(encoding="utf-8")
+        checker = 'python3 "$EGO_EXTERNAL_CHECKER" --ego-dir "$EGO_DIR"'
+        source = 'source "$EGO_SETUP_FILE"'
+        build = "catkin_make -DCMAKE_BUILD_TYPE=Release"
+        self.assertIn(checker, text)
+        self.assertIn(source, text)
+        self.assertLess(text.index(checker), text.index(source))
+        self.assertLess(text.index(source), text.index(build))
+
     def test_catkin_test_logs_stay_inside_team_workspace(self):
         text = FULL_VERIFIER.read_text(encoding="utf-8")
         assignment = text.index('ROS_LOG_DIR="$WORKSPACE_DIR/logs/verification"')
@@ -132,6 +142,20 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
         ):
             path.mkdir(parents=True, exist_ok=True)
         shutil.copy2(FULL_VERIFIER, scripts / FULL_VERIFIER.name)
+        checker = scripts / "check_ego_external.py"
+        write_executable(
+            checker,
+            r'''
+            #!/bin/bash
+            printf 'ego_check %s\n' "$*" >> "$COMMAND_LOG"
+            [ "${EGO_CHECK_MODE:-success}" = success ]
+            ''',
+        )
+        ego_dir = project / "external" / "ego-planner-swarm"
+        (ego_dir / "devel").mkdir(parents=True)
+        (ego_dir / "devel" / "setup.bash").write_text(
+            'printf "ego_source\\n" >> "$COMMAND_LOG"\n', encoding="utf-8"
+        )
         (package / "scripts" / "verify_full.py").touch()
         (package / "config" / "official_manifest.json").write_text("{}\n")
         (package / "config" / "ownership.json").write_text("{}\n")
@@ -145,7 +169,10 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             r'''
             #!/bin/bash
             set -euo pipefail
-            if [[ "${1:-}" == */verify_full.py ]]; then
+            if [[ "${1:-}" == */check_ego_external.py ]]; then
+                printf 'ego_check %s\n' "${*:2}" >> "$COMMAND_LOG"
+                [ "${EGO_CHECK_MODE:-success}" = success ]
+            elif [[ "${1:-}" == */verify_full.py ]]; then
                 if [ -L "$TEST_WORKSPACE/src/CMakeLists.txt" ]; then
                     echo "source symlink rejected" >&2
                     exit 24
@@ -195,6 +222,7 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 "COMMAND_LOG": str(log),
                 "CATKIN_TOPLEVEL": str(catkin_toplevel),
                 "TEST_WORKSPACE": str(workspace),
+                "EGO_DIR": str(ego_dir),
             }
         )
         return workspace, environment, log
@@ -221,6 +249,8 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
                 "verify static-compliance.json",
                 "unittest -m unittest discover -s "
                 f"{workspace}/tests -p test_*.py",
+                f"ego_check --ego-dir {self.root / 'project/external/ego-planner-swarm'}",
+                "ego_source",
                 "catkin_make -DCMAKE_BUILD_TYPE=Release",
                 "plugin_build",
                 "catkin_make run_tests",
@@ -230,6 +260,28 @@ class VerificationScriptsBehaviorTest(unittest.TestCase):
             * 2,
             log.read_text(encoding="utf-8").splitlines(),
         )
+
+    def test_failed_external_ego_check_prevents_catkin_build(self):
+        workspace, environment, log = self.prepare_full_verifier()
+        environment["EGO_CHECK_MODE"] = "fail"
+
+        result = subprocess.run(
+            [str(workspace / "scripts" / FULL_VERIFIER.name)],
+            cwd=self.root,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        commands = log.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            f"ego_check --ego-dir {self.root / 'project/external/ego-planner-swarm'}",
+            commands,
+        )
+        self.assertFalse(any(line.startswith("catkin_make") for line in commands))
 
     def prepare_smoke(
         self,

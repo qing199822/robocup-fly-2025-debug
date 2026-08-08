@@ -286,6 +286,7 @@ class LauncherHarness:
                 """\
                 #!/bin/bash
                 if [ "$1" = look_up ]; then
+                    printf '%s\\n' "$@" > "$STATE_DIR/mission_args"
                     touch "$STATE_DIR/mission_started"
                     if [ "$MISSION_MODE" = sleep ]; then
                         sleep "$MISSION_DURATION"
@@ -559,6 +560,26 @@ class LauncherHarness:
         result.stdout = output_path.read_text(encoding="utf-8")
         return result, time.monotonic() - started
 
+    def enable_fake_ego(self):
+        ego_dir = self.root / "external" / "ego-planner-swarm"
+        setup = ego_dir / "devel" / "setup.bash"
+        setup.parent.mkdir(parents=True)
+        setup.write_text(
+            '[ -e "$STATE_DIR/ego_checked" ] || return 42\n'
+            'touch "$STATE_DIR/ego_sourced"\n',
+            encoding="utf-8",
+        )
+        checker = self.workspace / "scripts" / "check_ego_external.py"
+        checker.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys\n"
+            "pathlib.Path(os.environ['STATE_DIR'], 'ego_checked').touch()\n"
+            "raise SystemExit(0 if sys.argv[1:] == "
+            f"['--ego-dir', {str(ego_dir)!r}] else 43)\n",
+            encoding="utf-8",
+        )
+        checker.chmod(0o755)
+
     def interrupt_during_setsid(
         self,
         *,
@@ -767,6 +788,22 @@ class OneClickLaunchTest(unittest.TestCase):
         self.assertIn('MISSION_PID="$LAST_STARTED_PID"', script)
         self.assertIn('wait_for_owned_process "$MISSION_PID"', script)
 
+    def test_navigation_and_goal_source_arguments_are_forwarded(self):
+        script = self.script
+        self.assertIn("NAVIGATION_MODE=${3:-static_patrol}", script)
+        self.assertIn("GOAL_SOURCE=${4:-mission}", script)
+        self.assertIn('navigation_mode:="$NAVIGATION_MODE"', script)
+        self.assertIn('goal_source:="$GOAL_SOURCE"', script)
+        self.assertIn('ego_dir:="$EGO_DIR"', script)
+
+    def test_ego_dependency_is_checked_before_its_workspace_is_sourced(self):
+        script = self.script
+        checker = 'python3 "$EGO_EXTERNAL_CHECKER" --ego-dir "$EGO_DIR"'
+        source = 'source "$EGO_SETUP_FILE"'
+        self.assertIn(checker, script)
+        self.assertIn(source, script)
+        self.assertLess(script.index(checker), script.index(source))
+
     def test_simulator_ready_timeout_can_be_configured(self):
         script = self.script
 
@@ -952,6 +989,44 @@ class OneClickLaunchBehaviorTest(unittest.TestCase):
             simulation_args,
         )
         self.assertFalse(run_tmp.exists())
+
+    def test_ego_manual_mode_checks_environment_and_forwards_arguments(self):
+        self.harness.enable_fake_ego()
+
+        result, elapsed = self.harness.run(
+            args=("6", "mission_down.json", "ego", "manual"),
+            MISSION_MODE="0",
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        self.assertTrue((self.harness.state / "ego_checked").is_file())
+        self.assertTrue((self.harness.state / "ego_sourced").is_file())
+        self.assertEqual(
+            [
+                "look_up",
+                "down_resume.launch",
+                "num_drones:=6",
+                "mission_filename:=mission_down.json",
+                "navigation_mode:=ego",
+                "goal_source:=manual",
+                f"ego_dir:={self.harness.root / 'external/ego-planner-swarm'}",
+            ],
+            (self.harness.state / "mission_args")
+            .read_text(encoding="utf-8")
+            .splitlines(),
+        )
+
+    def test_ego_mode_without_external_workspace_fails_before_simulation(self):
+        result, elapsed = self.harness.run(
+            args=("6", "mission_down.json", "ego", "manual"),
+            MISSION_MODE="0",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertLess(elapsed, 5, result.stdout)
+        self.assertIn("EGO-Planner-Swarm", result.stdout)
+        self.assertFalse((self.harness.state / "simulation_started").exists())
 
     def test_invalid_timeouts_fail_before_log_or_preflight_setup(self):
         invalid_values = {

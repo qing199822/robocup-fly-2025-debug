@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="fx"/>
+  <arg name="fy"/>
+  <arg name="cx"/>
+  <arg name="cy"/>
+  <arg name="depth_encoding"/>
+  <arg name="_validated_encoding"
+       value="$(eval depth_encoding if depth_encoding in ['16UC1', '32FC1'] else int('unsupported EGO depth encoding'))"/>
+
+  <group>
+    <remap from="/drone_0_external_odom"
+           to="/typhoon_h480_0/global_odom"/>
+    <remap from="/drone_0_external_depth"
+           to="/typhoon_h480_0/local_mapping/planner_depth"/>
+    <remap from="/drone_0_external_pose"
+           to="/typhoon_h480_0/local_mapping/planner_pose"/>
+    <remap from="/move_base_simple/goal"
+           to="/typhoon_h480_0/ego/goal"/>
+    <remap from="/broadcast_bspline"
+           to="/typhoon_h480_0/ego/broadcast_bspline"/>
+
+    <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="map_size_x_" value="50.0"/>
+    <arg name="map_size_y_" value="25.0"/>
+    <arg name="map_size_z_" value="6.0"/>
+    <arg name="odometry_topic" value="external_odom"/>
+    <arg name="camera_pose_topic" value="external_pose"/>
+    <arg name="depth_topic" value="external_depth"/>
+    <arg name="cloud_topic" value="unused_cloud"/>
+    <arg name="cx" value="$(arg cx)"/>
+    <arg name="cy" value="$(arg cy)"/>
+    <arg name="fx" value="$(arg fx)"/>
+    <arg name="fy" value="$(arg fy)"/>
+    <arg name="max_vel" value="1.5"/>
+    <arg name="max_acc" value="3.0"/>
+    <arg name="planning_horizon" value="7.5"/>
+    <arg name="point_num" value="1"/>
+    <arg name="point0_x" value="0.0"/>
+    <arg name="point0_y" value="0.0"/>
+    <arg name="point0_z" value="3.0"/>
+    <arg name="point1_x" value="0.0"/>
+    <arg name="point1_y" value="0.0"/>
+    <arg name="point1_z" value="3.0"/>
+    <arg name="point2_x" value="0.0"/>
+    <arg name="point2_y" value="0.0"/>
+    <arg name="point2_z" value="3.0"/>
+    <arg name="point3_x" value="0.0"/>
+    <arg name="point3_y" value="0.0"/>
+    <arg name="point3_z" value="3.0"/>
+    <arg name="point4_x" value="0.0"/>
+    <arg name="point4_y" value="0.0"/>
+    <arg name="point4_z" value="3.0"/>
+    <arg name="flight_type" value="1"/>
+    <arg name="use_distinctive_trajs" value="false"/>
+    <arg name="obj_num_set" value="0"/>
+    <arg name="drone_id" value="0"/>
+
+    </include>
+  </group>
+
+  <param name="/drone_0_ego_planner_node/grid_map/virtual_ceil_height"
+         value="4.0"/>
+  <param name="/drone_0_ego_planner_node/grid_map/visualization_truncate_height"
+         value="4.0"/>
+
+  <node pkg="ego_planner" type="traj_server"
+        name="drone_0_traj_server" required="true" output="screen">
+    <remap from="position_cmd"
+           to="/typhoon_h480_0/ego/position_cmd"/>
+    <remap from="~planning/bspline"
+           to="/drone_0_planning/bspline"/>
+    <param name="traj_server/time_forward" value="1.0"/>
+  </node>
+</launch>

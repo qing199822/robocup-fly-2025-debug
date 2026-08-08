@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+  <arg name="ego_dir"
+       default="/home/wangtao/robocup_fly/external/ego-planner-swarm"/>
+  <arg name="_validated_vehicle"
+       value="$(eval vehicle_type + '_' + str(drone_id) if vehicle_type == 'typhoon_h480' and str(drone_id) == '0' else int('ego_single.launch supports only typhoon_h480_0'))"/>
+
+  <node pkg="ego_adapter" type="ego_external_guard.py"
+        name="ego_external_guard" required="true" output="screen">
+    <param name="ego_dir" value="$(arg ego_dir)"/>
+    <param name="checker"
+           value="$(find ego_adapter)/../../../scripts/check_ego_external.py"/>
+  </node>
+
+  <node pkg="ego_adapter" type="ego_camera_bootstrap.py"
+        name="ego_camera_bootstrap" required="true" output="screen">
+    <param name="camera_info_topic"
+           value="/typhoon_h480_0/realsense/depth_camera/depth/camera_info"/>
+    <param name="depth_topic"
+           value="/typhoon_h480_0/local_mapping/planner_depth"/>
+    <param name="runtime_launch"
+           value="$(find ego_adapter)/launch/ego_runtime.launch"/>
+    <param name="guard_ready_param" value="/ego_external_guard/ready"/>
+  </node>
+
+  <node pkg="ego_adapter" type="ego_adapter_node"
+        name="ego_adapter_typhoon_h480_0" required="true" output="screen">
+    <rosparam command="load"
+              file="$(find ego_adapter)/config/single_drone.yaml"/>
+  </node>
+</launch>

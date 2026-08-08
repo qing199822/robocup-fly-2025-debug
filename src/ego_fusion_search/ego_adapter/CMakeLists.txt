@@ -45,6 +45,12 @@ add_dependencies(ego_adapter_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(
   ego_adapter_node ego_command_policy ${catkin_LIBRARIES})
 
+catkin_install_python(PROGRAMS
+  scripts/ego_camera_bootstrap.py
+  scripts/ego_external_guard.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   foreach(test_target command_policy_test bspline_sampler_test)
@@ -66,3 +72,5 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
 install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)

@@ -304,6 +304,31 @@ class EgoAdapterNodeTest(unittest.TestCase):
         )
         self.assertTrue(self._is_zero(), "stale odometry did not stop output")
 
+        conflict_publisher = rospy.Publisher(
+            "/test/navigator/cmd_vel", Twist, queue_size=1
+        )
+        try:
+            self._wait(
+                lambda: conflict_publisher.get_num_connections() > 0,
+                "conflicting navigator publisher was not registered",
+            )
+            self._wait(
+                lambda: "NAVIGATOR_PUBLISHER_CONFLICT"
+                in self._snapshot("_status_history"),
+                "adapter did not detect the second navigator publisher",
+                timeout=3.0,
+            )
+            commands_before = self._snapshot("_command_count")
+            self._publish_for(0.2, self._publish_safety)
+            self.assertGreater(
+                self._snapshot("_command_count"),
+                commands_before,
+                "publisher conflict stopped the zero-command heartbeat",
+            )
+            self.assertTrue(self._is_zero())
+        finally:
+            conflict_publisher.unregister()
+
         self._generation_pub.publish(UInt64(data=6))
         invalid_start = rospy.Time.now()
         self._spline_pub.publish(self._spline(7, invalid_start))

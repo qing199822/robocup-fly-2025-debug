@@ -15,7 +15,9 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
+#include <ros/master.h>
 #include <ros/ros.h>
+#include <ros/this_node.h>
 #include <search_msgs/LocalClearance.h>
 #include <search_msgs/PerceptionHealth.h>
 #include <search_msgs/ValidateTrajectory.h>
@@ -232,6 +234,10 @@ class EgoAdapterNode {
         this);
     mux_subscriber_ = node_.subscribe(
         config_.mux_selected_topic, 1, &EgoAdapterNode::muxCallback, this);
+    refreshPublisherOwnership();
+    publisher_guard_timer_ = node_.createWallTimer(
+        ros::WallDuration(1.0),
+        &EgoAdapterNode::publisherGuardCallback, this);
     timer_ = node_.createTimer(ros::Duration(1.0 / config_.control_rate),
                                &EgoAdapterNode::timerCallback, this);
     validation_thread_ = std::thread(&EgoAdapterNode::validationLoop, this);
@@ -251,6 +257,54 @@ class EgoAdapterNode {
   }
 
  private:
+  bool ownsNavigatorTopicExclusively() const {
+    XmlRpc::XmlRpcValue request;
+    XmlRpc::XmlRpcValue response;
+    XmlRpc::XmlRpcValue payload;
+    request[0] = ros::this_node::getName();
+    if (!ros::master::execute("getSystemState", request, response, payload,
+                              false) ||
+        payload.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+        payload.size() < 1) {
+      return false;
+    }
+
+    const std::string expected_topic = node_.resolveName(config_.command_topic);
+    const std::string expected_node = ros::this_node::getName();
+    const XmlRpc::XmlRpcValue& publishers = payload[0];
+    if (publishers.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+      return false;
+    }
+    for (int index = 0; index < publishers.size(); ++index) {
+      const XmlRpc::XmlRpcValue& entry = publishers[index];
+      if (entry.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+          entry.size() != 2 ||
+          entry[0].getType() != XmlRpc::XmlRpcValue::TypeString ||
+          static_cast<std::string>(entry[0]) != expected_topic ||
+          entry[1].getType() != XmlRpc::XmlRpcValue::TypeArray) {
+        continue;
+      }
+      const XmlRpc::XmlRpcValue& nodes = entry[1];
+      return nodes.size() == 1 &&
+             nodes[0].getType() == XmlRpc::XmlRpcValue::TypeString &&
+             static_cast<std::string>(nodes[0]) == expected_node;
+    }
+    return false;
+  }
+
+  void refreshPublisherOwnership() {
+    const bool exclusive = ownsNavigatorTopicExclusively();
+    std::lock_guard<std::mutex> lock(mutex_);
+    navigator_publisher_exclusive_ = exclusive;
+    if (!exclusive) {
+      invalidateBindingLocked("NAVIGATOR_PUBLISHER_CONFLICT");
+    }
+  }
+
+  void publisherGuardCallback(const ros::WallTimerEvent&) {
+    refreshPublisherOwnership();
+  }
+
   void invalidateBindingLocked(const std::string& status) {
     spline_.reset();
     has_position_command_ = false;
@@ -401,6 +455,10 @@ class EgoAdapterNode {
   }
 
   bool inputsFreshLocked(const ros::Time& now, std::string* fault) const {
+    if (!navigator_publisher_exclusive_) {
+      *fault = "NAVIGATOR_PUBLISHER_CONFLICT";
+      return false;
+    }
     if (!has_odom_) {
       *fault = "ODOM_MISSING";
       return false;
@@ -706,6 +764,7 @@ class EgoAdapterNode {
   ros::Subscriber mux_subscriber_;
   ros::ServiceClient validation_client_;
   ros::Timer timer_;
+  ros::WallTimer publisher_guard_timer_;
 
   std::mutex mutex_;
   std::condition_variable validation_condition_;
@@ -726,6 +785,7 @@ class EgoAdapterNode {
   std::uint64_t bound_generation_{0u};
 
   bool has_mux_selection_{false};
+  bool navigator_publisher_exclusive_{false};
   bool mux_is_navigator_{false};
   bool has_odom_{false};
   bool has_health_{false};

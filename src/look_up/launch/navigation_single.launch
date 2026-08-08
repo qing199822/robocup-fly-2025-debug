@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="navigation_mode" default="ego"/>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+  <arg name="ego_dir"
+       default="/home/wangtao/robocup_fly/external/ego-planner-swarm"/>
+  <arg name="_validated_mode"
+       value="$(eval navigation_mode if navigation_mode in ['ego', 'static_patrol'] else int('navigation_mode is not implemented in the single-drone EGO phase'))"/>
+  <arg name="_validated_vehicle"
+       value="$(eval vehicle_type + '_' + str(drone_id) if vehicle_type == 'typhoon_h480' and str(drone_id) == '0' else int('single-drone navigation supports only typhoon_h480_0'))"/>
+
+  <group if="$(eval navigation_mode == 'ego')">
+    <include file="$(find local_mapping)/launch/local_mapping_single.launch">
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+      <arg name="drone_id" value="$(arg drone_id)"/>
+    </include>
+    <include file="$(find ego_adapter)/launch/ego_single.launch">
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+      <arg name="drone_id" value="$(arg drone_id)"/>
+      <arg name="ego_dir" value="$(arg ego_dir)"/>
+    </include>
+    <include file="$(find search_coordinator)/launch/search_single.launch">
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+      <arg name="drone_id" value="$(arg drone_id)"/>
+    </include>
+  </group>
+
+  <group if="$(eval navigation_mode == 'static_patrol')">
+    <include file="$(find simple_navigator)/launch/nav.launch">
+      <arg name="num_drones" value="1"/>
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+    </include>
+  </group>
+</launch>
