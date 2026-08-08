@@ -60,6 +60,10 @@ TrackingStateMachine::TrackingStateMachine(ros::NodeHandle& nh,
     
     // 新增：追踪状态发布器，话题名与节点名相同
     tracking_status_pub_ = nh_.advertise<std_msgs::String>("yolo_human_tracking_" + vehicle_type_ + "_" + vehicle_id_, 1);
+    tracking_phase_pub_ = nh_.advertise<std_msgs::String>(
+        "/" + vehicle_type_ + "_" + vehicle_id_ + "/tracking/phase",
+        1,
+        true);
     
     smoother_ = std::make_unique<OutputSmoother>(nh_);
     last_update_time_ = ros::Time::now(); 
@@ -71,6 +75,7 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
                                     const geometry_msgs::Twist& current_velocity_body)
 {
     if (!takeoff_complete_ || !mission_active_) {
+        publishTrackingPhase("WAIT_READY", ros::Time::now());
         return;
     }
 
@@ -121,6 +126,7 @@ void TrackingStateMachine::update(const TargetMap& current_visible_targets,
             handleReturningState(dt);
             break;
     }
+    publishTrackingPhase(stateToString(current_state_), now);
 }
 
 void TrackingStateMachine::setTakeoffComplete(bool complete) {
@@ -620,6 +626,14 @@ void TrackingStateMachine::resetForClosedControlGate() {
     complete_attempts_ = 0;
     heartbeat_received_ = false;
     broadcast_confirmation_logged_ = false;
+}
+
+void TrackingStateMachine::publishTrackingPhase(const std::string& phase,
+                                                 const ros::Time& stamp) {
+    std_msgs::String message;
+    message.data = phase + ":" + currently_tracked_target_id_ + ":" +
+                   std::to_string(stamp.toSec());
+    tracking_phase_pub_.publish(message);
 }
 
 std::string TrackingStateMachine::stateToString(State state) {

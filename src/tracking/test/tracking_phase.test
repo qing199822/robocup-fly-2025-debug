@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="tracking" type="tracking_node" name="tracking_phase_node_under_test"
+        args="typhoon_h480 0" output="screen">
+    <rosparam file="$(find tracking)/config/params.yaml" command="load"/>
+    <param name="state_machine/confirmation_duration" value="0.05"/>
+    <param name="state_machine/broadcast_confirmation_duration" value="0.2"/>
+    <param name="state_machine/broadcast_heartbeat_timeout" value="0.1"/>
+    <param name="state_machine/tracking_session_timeout" value="0.5"/>
+  </node>
+
+  <test test-name="tracking_phase" pkg="tracking"
+        type="test_tracking_phase.py" time-limit="20"/>
+</launch>

@@ -1,0 +1,29 @@
+update_rate: 20.0
+input_timeout: 0.50
+validation_sample_spacing: 0.10
+generation_settle_delay: 0.05
+
+goal_position_epsilon: 0.20
+goal_altitude_epsilon: 0.10
+planning_timeout: 1.00
+local_arrival_tolerance: 1.00
+max_local_goal_distance: 8.00
+min_search_altitude: 2.00
+max_search_altitude: 4.00
+frontier_max_age: 0.50
+
+high_level_goal_topic: /typhoon_h480_0/move_base_simple/goal
+odom_topic: /typhoon_h480_0/global_odom
+health_topic: /typhoon_h480_0/local_mapping/health
+frontier_goal_topic: /typhoon_h480_0/local_mapping/frontier_goal
+mission_active_topic: /typhoon_h480_0/mission/active
+takeoff_complete_topic: /swarm/takeoff_complete
+tracking_phase_topic: /typhoon_h480_0/tracking/phase
+mux_selected_topic: /typhoon_h480_0/pose_cmd_mux/selected
+adapter_status_topic: /typhoon_h480_0/ego_adapter/status
+validate_trajectory_service: /typhoon_h480_0/local_mapping/validate_trajectory
+
+ego_goal_topic: /typhoon_h480_0/ego/goal
+generation_topic: /typhoon_h480_0/navigation/task_generation
+status_topic: /typhoon_h480_0/search_coordinator/status
+navigator_topic: /typhoon_h480_0/mux_inputs/navigator/cmd_vel

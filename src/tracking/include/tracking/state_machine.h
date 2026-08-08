@@ -109,11 +109,14 @@ private:
     void startBroadcastSession();
     void updateControlGateState(const char* gate_name);
     void resetForClosedControlGate();
+    void publishTrackingPhase(const std::string& phase,
+                              const ros::Time& stamp);
     std::string stateToString(State state);
 
     // --- ROS and Core Components ---
     ros::NodeHandle& nh_;
     ros::Publisher tracking_status_pub_;
+    ros::Publisher tracking_phase_pub_;
     std::string vehicle_type_;
     std::string vehicle_id_;
     TrackingController& controller_;

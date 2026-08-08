@@ -71,6 +71,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   add_rostest(test/takeoff_gate.test)
   add_rostest(test/tracking_completion.test)
+  add_rostest(test/tracking_phase.test)
 endif()
 
 # ========================= 6. 安装规则 (可选但推荐) =========================

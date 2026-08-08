@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="search_coordinator" type="search_coordinator_node"
+        name="search_coordinator_under_test" required="true" output="screen">
+    <param name="high_level_goal_topic" value="/test/high_level_goal"/>
+    <param name="odom_topic" value="/test/odom"/>
+    <param name="health_topic" value="/test/health"/>
+    <param name="frontier_goal_topic" value="/test/frontier"/>
+    <param name="mission_active_topic" value="/test/mission_active"/>
+    <param name="takeoff_complete_topic" value="/test/takeoff_complete"/>
+    <param name="tracking_phase_topic" value="/test/tracking_phase"/>
+    <param name="mux_selected_topic" value="/test/mux_selected"/>
+    <param name="adapter_status_topic" value="/test/adapter_status"/>
+    <param name="validate_trajectory_service" value="/test/validate"/>
+    <param name="ego_goal_topic" value="/test/ego_goal"/>
+    <param name="generation_topic" value="/test/generation"/>
+    <param name="status_topic" value="/test/coordinator_status"/>
+  </node>
+
+  <test test-name="search_coordinator_node" pkg="search_coordinator"
+        type="test_search_coordinator_node.py" time-limit="25"/>
+</launch>
