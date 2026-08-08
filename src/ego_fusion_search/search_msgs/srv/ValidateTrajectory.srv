@@ -1,0 +1,9 @@
+std_msgs/Header header
+uint64 task_generation
+geometry_msgs/Point[] samples
+---
+bool valid
+uint64 task_generation
+time map_stamp
+float32 min_clearance_m
+string fault_code

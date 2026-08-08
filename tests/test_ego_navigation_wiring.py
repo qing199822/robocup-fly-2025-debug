@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check_ego_external.py"
+SEARCH_MSGS = ROOT / "src/ego_fusion_search/search_msgs"
 
 
 class EgoExternalContractTest(unittest.TestCase):
@@ -18,6 +19,18 @@ class EgoExternalContractTest(unittest.TestCase):
             checker,
         )
         self.assertIn("src/planner/traj_utils/msg/Bspline.msg", checker)
+
+
+class ValidateTrajectoryContractTest(unittest.TestCase):
+    def test_service_contract_is_generated(self):
+        service = (SEARCH_MSGS / "srv/ValidateTrajectory.srv").read_text()
+        self.assertIn("uint64 task_generation", service)
+        self.assertIn("geometry_msgs/Point[] samples", service)
+        self.assertIn("time map_stamp", service)
+        cmake = (SEARCH_MSGS / "CMakeLists.txt").read_text()
+        self.assertIn("add_service_files", cmake)
+        self.assertIn("ValidateTrajectory.srv", cmake)
+        self.assertIn("geometry_msgs", cmake)
 
 
 if __name__ == "__main__":
