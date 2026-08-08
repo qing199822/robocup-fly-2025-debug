@@ -676,7 +676,8 @@ class EgoAdapterNode {
           output.linear.y = result.left;
           output.linear.z = result.up;
           output.angular.z = result.yaw_rate;
-          status_ = result.fault_code;
+          status_ = "EXECUTING:" + std::to_string(bound_generation_) + ":" +
+                    std::to_string(bound_trajectory_id_);
         } else if (!validation_pending_ && status_ != "TRAJECTORY_REJECTED") {
           status_ = result.fault_code;
         }
