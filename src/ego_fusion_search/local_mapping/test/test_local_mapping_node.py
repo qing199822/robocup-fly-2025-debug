@@ -280,6 +280,34 @@ class LocalMappingNodeTest(unittest.TestCase):
             seconds, lambda: self._publish_synchronized_inputs(**kwargs)
         )
 
+    def _publish_until_map_integrations(
+        self, validate, minimum_integrations, timeout=4.0, **kwargs
+    ):
+        def map_stamp():
+            request = ValidateTrajectoryRequest()
+            request.header.stamp = rospy.Time.now()
+            request.header.frame_id = "map"
+            request.task_generation = 7
+            return validate(request).map_stamp.to_nsec()
+
+        baseline = map_stamp()
+        observed = set()
+        deadline = rospy.Time.now() + rospy.Duration(timeout)
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            self._publish_synchronized_inputs(**kwargs)
+            stamp = map_stamp()
+            if stamp > baseline:
+                observed.add(stamp)
+            if len(observed) >= minimum_integrations:
+                return
+            rate.sleep()
+        self.fail(
+            "mapping did not complete {} new integrations; observed {}".format(
+                minimum_integrations, len(observed)
+            )
+        )
+
     def _keep_depth_for(self, seconds):
         self._publish_for(
             seconds,
@@ -666,8 +694,12 @@ class LocalMappingNodeTest(unittest.TestCase):
 
         self._generation_pub.publish(UInt64(data=7))
         rospy.sleep(0.1)
-        self._publish_inputs_for(
-            0.5, depth_mm=4000, boxes="empty", odom_x=-1.0
+        self._publish_until_map_integrations(
+            validate,
+            2,
+            depth_mm=4000,
+            boxes="empty",
+            odom_x=-1.0,
         )
         self._publish_inputs_for(
             0.5, depth_mm=3000, boxes="empty", odom_x=0.0
@@ -676,7 +708,8 @@ class LocalMappingNodeTest(unittest.TestCase):
             lambda: self._snapshot("_health") is not None
             and self._snapshot("_health").map_healthy
             and self._snapshot("_planner_depth") is not None
-            and self._snapshot("_planner_pose") is not None,
+            and self._snapshot("_planner_pose") is not None
+            and abs(self._snapshot("_planner_pose").pose.position.x) < 1e-9,
             "healthy synchronized planner inputs were not published",
         )
 

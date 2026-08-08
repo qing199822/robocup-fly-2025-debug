@@ -184,10 +184,12 @@ class EgoAdapterNodeTest(unittest.TestCase):
             callback()
             rate.sleep()
 
-    def _wait(self, predicate, message, timeout=3.0):
+    def _wait(self, predicate, message, timeout=3.0, action=None):
         deadline = rospy.Time.now() + rospy.Duration(timeout)
         rate = rospy.Rate(100)
         while not rospy.is_shutdown() and rospy.Time.now() < deadline:
+            if action is not None:
+                action()
             if predicate():
                 return
             rate.sleep()
@@ -270,10 +272,10 @@ class EgoAdapterNodeTest(unittest.TestCase):
             self._status_history = []
         self._service_blocked.set()
         self._service_entered.clear()
-        self._publish_for(0.2, lambda: self._publish_command_cycle(map_start))
-        self.assertTrue(
-            self._service_entered.is_set(),
+        self._wait(
+            self._service_entered.is_set,
             "periodic map revalidation did not start",
+            action=lambda: self._publish_command_cycle(map_start),
         )
         self.assertTrue(self._is_zero(), "command remained live while map validation was pending")
         self._service_valid = False
@@ -283,6 +285,7 @@ class EgoAdapterNodeTest(unittest.TestCase):
             "new obstacle did not reject the active trajectory; statuses={}".format(
                 self._snapshot("_status_history")
             ),
+            action=lambda: self._publish_command_cycle(map_start),
         )
         self.assertTrue(self._is_zero())
 
