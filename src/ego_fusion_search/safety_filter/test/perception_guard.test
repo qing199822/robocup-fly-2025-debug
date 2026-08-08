@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="topic_tools" type="mux" name="test_mux"
+        args="/test/raw /test/takeoff /test/navigator /test/external mux:=/test_mux">
+    <param name="initial_topic" value="/test/takeoff"/>
+  </node>
+  <node pkg="safety_filter" type="safety_filter_node"
+        name="perception_safety_filter" required="true">
+    <rosparam command="load" file="$(find safety_filter)/config/default.yaml"/>
+    <param name="raw_command_topic" value="/test/raw"/>
+    <param name="odom_topic" value="/test/odom"/>
+    <param name="final_command_topic" value="/test/final"/>
+    <param name="status_topic" value="/test/status"/>
+    <param name="perception_guard_enabled" value="true"/>
+    <param name="health_topic" value="/test/health"/>
+    <param name="clearance_topic" value="/test/clearance"/>
+    <param name="mux_selected_topic" value="/test_mux/selected"/>
+    <param name="takeoff_topic" value="/test/takeoff"/>
+    <param name="navigator_topic" value="/test/navigator"/>
+    <param name="external_topic" value="/test/external"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="command_timeout" value="0.2"/>
+    <param name="odom_timeout" value="0.2"/>
+    <param name="perception_timeout" value="0.2"/>
+    <param name="max_xy_acceleration" value="100.0"/>
+    <param name="max_z_acceleration" value="100.0"/>
+  </node>
+  <test test-name="perception_guard" pkg="safety_filter"
+        type="test_perception_guard.py" time-limit="30"/>
+</launch>

@@ -3,6 +3,7 @@
   <arg name="num_drones" default="6"/>
   <arg name="vehicle_type" default="typhoon_h480"/>
   <arg name="drone_id" default="0"/>
+  <arg name="perception_guard_enabled" default="false"/>
 
   <group if="$(eval drone_id &lt; num_drones)">
     <group ns="$(arg vehicle_type)_$(arg drone_id)">
@@ -18,6 +19,20 @@
                value="/xtdrone/$(arg vehicle_type)_$(arg drone_id)/cmd_vel_flu"/>
         <param name="status_topic"
                value="/$(arg vehicle_type)_$(arg drone_id)/safety/status"/>
+        <param name="perception_guard_enabled"
+               value="$(arg perception_guard_enabled)"/>
+        <param name="health_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/local_mapping/health"/>
+        <param name="clearance_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/local_mapping/clearance"/>
+        <param name="mux_selected_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/pose_cmd_mux/selected"/>
+        <param name="takeoff_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/takeoff/cmd_vel"/>
+        <param name="navigator_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/navigator/cmd_vel"/>
+        <param name="external_topic"
+               value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/external/pose_cmd"/>
       </node>
     </group>
 
@@ -25,6 +40,7 @@
       <arg name="num_drones" value="$(arg num_drones)"/>
       <arg name="vehicle_type" value="$(arg vehicle_type)"/>
       <arg name="drone_id" value="$(eval drone_id + 1)"/>
+      <arg name="perception_guard_enabled" value="$(arg perception_guard_enabled)"/>
     </include>
   </group>
 </launch>

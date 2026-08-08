@@ -4,12 +4,12 @@ project(safety_filter)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(catkin REQUIRED COMPONENTS geometry_msgs nav_msgs roscpp std_msgs)
+find_package(catkin REQUIRED COMPONENTS geometry_msgs nav_msgs roscpp search_msgs std_msgs)
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES safety_policy
-  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp std_msgs
+  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp search_msgs std_msgs
 )
 
 include_directories(include ${catkin_INCLUDE_DIRS})
@@ -27,6 +27,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   find_package(rostest REQUIRED)
   add_rostest(test/safety_filter_node.test)
+  add_rostest(test/perception_guard.test)
 endif()
 
 install(TARGETS safety_policy

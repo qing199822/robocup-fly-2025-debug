@@ -43,6 +43,8 @@
     <!-- ========== 6. 最终速度安全过滤 ========== -->
     <include file="$(find safety_filter)/launch/safety_filter_swarm.launch">
         <arg name="num_drones" value="$(arg active_num_drones)" />
+        <arg name="perception_guard_enabled"
+             value="$(eval navigation_mode == 'ego')" />
     </include>
 
     <!-- ========== 7. 总控节点 ========== -->

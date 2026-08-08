@@ -11,6 +11,7 @@
   <depend>roscpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>search_msgs</depend>
   <depend>std_msgs</depend>
 
   <test_depend>rostest</test_depend>

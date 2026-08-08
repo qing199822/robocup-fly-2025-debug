@@ -78,6 +78,18 @@ class NavigationModeWiringTest(unittest.TestCase):
         )[1].split("</include>", 1)[0]
         self.assertIn('if="$(eval goal_source == \'mission\')"', task_include)
 
+    def test_final_perception_guard_is_enabled_only_for_ego_mode(self):
+        text = (
+            ROOT / "src/look_up/launch/down_resume.launch"
+        ).read_text(encoding="utf-8")
+        self.assertIn('name="perception_guard_enabled"', text)
+        self.assertIn("navigation_mode == 'ego'", text)
+        safety_launch = (
+            ROOT
+            / "src/ego_fusion_search/safety_filter/launch/safety_filter_swarm.launch"
+        ).read_text(encoding="utf-8")
+        self.assertIn('name="perception_guard_enabled" default="false"', safety_launch)
+
 
 class EgoSingleLaunchContractTest(unittest.TestCase):
     def test_single_launch_guards_external_source_and_vehicle(self):

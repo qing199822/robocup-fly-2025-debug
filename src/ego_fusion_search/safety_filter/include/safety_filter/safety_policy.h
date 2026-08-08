@@ -21,10 +21,45 @@ struct Result {
   Fault fault{Fault::NONE};
 };
 
+struct AxisClearance {
+  bool known{false};
+  double metres{0.0};
+};
+
+struct DirectionalClearance {
+  AxisClearance forward;
+  AxisClearance backward;
+  AxisClearance left;
+  AxisClearance right;
+  AxisClearance upward;
+  AxisClearance downward;
+};
+
+struct PerceptionLimits {
+  double braking_clearance{1.5};
+  double emergency_clearance{0.8};
+};
+
+struct PerceptionResult {
+  geometry_msgs::Twist command;
+  bool blocked{false};
+};
+
+class PerceptionGuard {
+ public:
+  explicit PerceptionGuard(const PerceptionLimits& limits);
+  PerceptionResult apply(const geometry_msgs::Twist& requested,
+                         const DirectionalClearance& clearance) const;
+
+ private:
+  PerceptionLimits limits_;
+};
+
 class SafetyPolicy {
  public:
   explicit SafetyPolicy(const Limits& limits);
-  Result apply(const geometry_msgs::Twist& requested, double altitude, double dt);
+  Result apply(const geometry_msgs::Twist& requested, double altitude, double dt,
+               double max_altitude);
   void reset();
 
  private:
