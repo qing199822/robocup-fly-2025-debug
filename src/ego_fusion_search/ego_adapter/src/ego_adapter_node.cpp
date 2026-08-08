@@ -315,6 +315,11 @@ class EgoAdapterNode {
     bound_trajectory_id_ = 0;
     ++validation_sequence_;
     status_ = status;
+    terminal_validation_fault_ =
+        status == "TRAJECTORY_SERVICE_UNAVAILABLE" ||
+        status == "TRAJECTORY_VALIDATION_TIMEOUT" ||
+        status == "STALE_TRAJECTORY_RESPONSE" ||
+        status == "TRAJECTORY_REJECTED";
   }
 
   void invalidateValidationLocked(const std::string& status) {
@@ -426,7 +431,9 @@ class EgoAdapterNode {
     std::lock_guard<std::mutex> lock(mutex_);
     has_position_command_ = false;
     if (!spline_) {
-      status_ = "NO_BOUND_SPLINE";
+      if (!terminal_validation_fault_) {
+        status_ = "NO_BOUND_SPLINE";
+      }
       return;
     }
     const double stamp = message->header.stamp.toSec();
@@ -629,25 +636,21 @@ class EgoAdapterNode {
       }
       validation_pending_ = false;
       if (!called) {
-        status_ = "TRAJECTORY_SERVICE_UNAVAILABLE";
-        trajectory_valid_ = false;
+        invalidateBindingLocked("TRAJECTORY_SERVICE_UNAVAILABLE");
         continue;
       }
       if (!finite(elapsed) || elapsed > config_.map_response_timeout) {
-        status_ = "TRAJECTORY_VALIDATION_TIMEOUT";
-        trajectory_valid_ = false;
+        invalidateBindingLocked("TRAJECTORY_VALIDATION_TIMEOUT");
         continue;
       }
       if (service.response.task_generation != job.generation ||
           (!last_validated_map_stamp_.isZero() &&
            service.response.map_stamp < last_validated_map_stamp_)) {
-        status_ = "STALE_TRAJECTORY_RESPONSE";
-        trajectory_valid_ = false;
+        invalidateBindingLocked("STALE_TRAJECTORY_RESPONSE");
         continue;
       }
       if (!service.response.valid) {
-        status_ = "TRAJECTORY_REJECTED";
-        trajectory_valid_ = false;
+        invalidateBindingLocked("TRAJECTORY_REJECTED");
         continue;
       }
       trajectory_valid_ = true;
@@ -786,6 +789,7 @@ class EgoAdapterNode {
 
   bool has_mux_selection_{false};
   bool navigator_publisher_exclusive_{false};
+  bool terminal_validation_fault_{false};
   bool mux_is_navigator_{false};
   bool has_odom_{false};
   bool has_health_{false};

@@ -20,4 +20,8 @@
   <depend>tf2</depend>
   <depend>topic_tools</depend>
   <depend>traj_utils</depend>
+
+  <test_depend>darknet_ros_msgs</test_depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>tf2_ros</test_depend>
 </package>

@@ -62,6 +62,7 @@ if(CATKIN_ENABLE_TESTING)
     endif()
   endforeach()
   add_rostest(test/ego_adapter_node.test)
+  add_rostest(test/ego_single_faults.test)
 endif()
 
 install(TARGETS ego_command_policy ego_adapter_node

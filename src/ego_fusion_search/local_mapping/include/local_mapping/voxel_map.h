@@ -46,6 +46,11 @@ class VoxelMap {
                                   double horizontal_radius,
                                   double vertical_radius,
                                   double safety_margin, double now) const;
+  SweepResult validateSweptVolume(const std::vector<Vec3>& samples,
+                                  double horizontal_radius,
+                                  double vertical_radius,
+                                  double safety_margin, double now,
+                                  const Vec3& trusted_start) const;
   std::vector<Vec3> staticOccupiedPoints(double now) const;
   std::vector<Vec3> dynamicOccupiedPoints(double now) const;
 
@@ -76,6 +81,10 @@ class VoxelMap {
   void pruneExpiredDynamic(double now) const;
   double entryDistance(const Vec3& origin, const Vec3& unit_axis,
                        const Key& key) const;
+  SweepResult validateSweptVolumeImpl(
+      const std::vector<Vec3>& samples, double horizontal_radius,
+      double vertical_radius, double safety_margin, double now,
+      const Vec3* trusted_start) const;
 
   double resolution_;
   std::uint32_t occupied_hits_;

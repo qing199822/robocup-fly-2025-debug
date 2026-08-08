@@ -337,6 +337,25 @@ Clearance VoxelMap::axisClearance(const Vec3& origin, const Vec3& unit_axis,
 SweepResult VoxelMap::validateSweptVolume(
     const std::vector<Vec3>& samples, double horizontal_radius,
     double vertical_radius, double safety_margin, double now) const {
+  return validateSweptVolumeImpl(samples, horizontal_radius, vertical_radius,
+                                 safety_margin, now, nullptr);
+}
+
+SweepResult VoxelMap::validateSweptVolume(
+    const std::vector<Vec3>& samples, double horizontal_radius,
+    double vertical_radius, double safety_margin, double now,
+    const Vec3& trusted_start) const {
+  if (!isFinite(trusted_start)) {
+    throw std::invalid_argument("trusted swept volume start must be finite");
+  }
+  return validateSweptVolumeImpl(samples, horizontal_radius, vertical_radius,
+                                 safety_margin, now, &trusted_start);
+}
+
+SweepResult VoxelMap::validateSweptVolumeImpl(
+    const std::vector<Vec3>& samples, double horizontal_radius,
+    double vertical_radius, double safety_margin, double now,
+    const Vec3* trusted_start) const {
   if (samples.empty()) {
     throw std::invalid_argument("swept volume samples must not be empty");
   }
@@ -373,8 +392,8 @@ SweepResult VoxelMap::validateSweptVolume(
         sampleCount(std::sqrt(dx * dx + dy * dy + dz * dz)));
   }
 
-  const auto validate_centre = [this, radius, half_height, safety_margin,
-                                now](const Vec3& centre) {
+  const auto validate_centre = [this, radius, half_height, safety_margin, now,
+                                trusted_start](const Vec3& centre) {
     const Key lower = keyFor({centre.x - radius, centre.y - radius,
                               centre.z - half_height});
     const Key upper = keyFor({centre.x + radius, centre.y + radius,
@@ -394,7 +413,31 @@ SweepResult VoxelMap::validateSweptVolume(
               0.0, std::abs(voxel_centre.z - centre.z) - half_voxel);
           if (std::hypot(dx, dy) <= radius && dz <= half_height) {
             const CellState state = stateForKey(key, now);
-            if (state != CellState::FREE) {
+            const double trusted_dx =
+                trusted_start == nullptr
+                    ? std::numeric_limits<double>::infinity()
+                    : std::max(0.0,
+                               std::abs(voxel_centre.x - trusted_start->x) -
+                                   half_voxel);
+            const double trusted_dy =
+                trusted_start == nullptr
+                    ? std::numeric_limits<double>::infinity()
+                    : std::max(0.0,
+                               std::abs(voxel_centre.y - trusted_start->y) -
+                                   half_voxel);
+            const double trusted_dz =
+                trusted_start == nullptr
+                    ? std::numeric_limits<double>::infinity()
+                    : std::max(0.0,
+                               std::abs(voxel_centre.z - trusted_start->z) -
+                                   half_voxel);
+            const bool unknown_is_inside_trusted_start =
+                trusted_start != nullptr &&
+                std::hypot(trusted_dx, trusted_dy) <= radius &&
+                trusted_dz <= half_height;
+            if (state == CellState::OCCUPIED ||
+                (state == CellState::UNKNOWN &&
+                 !unknown_is_inside_trusted_start)) {
               return SweepResult{
                   false,
                   state == CellState::UNKNOWN ? SweepFault::UNKNOWN

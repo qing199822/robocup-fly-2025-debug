@@ -229,9 +229,19 @@ class EgoAdapterNodeTest(unittest.TestCase):
 
         self._service_valid = True
         self._publish_for(0.35, lambda: self._publish_command_cycle(start))
-        self._wait(lambda: self._snapshot("_command").linear.x > 0.0, "valid trajectory never produced forward command")
+        self.assertTrue(
+            self._is_zero(),
+            "a rejected trajectory recovered without a new EGO trajectory",
+        )
+        start = rospy.Time.now()
+        self._spline_pub.publish(self._spline(2, start))
+        self._publish_for(0.35, lambda: self._publish_command_cycle(start))
         self._wait(
-            lambda: "EXECUTING:1:1" in self._snapshot("_status_history"),
+            lambda: self._snapshot("_command").linear.x > 0.0,
+            "new trajectory did not recover forward command",
+        )
+        self._wait(
+            lambda: "EXECUTING:1:2" in self._snapshot("_status_history"),
             "bound generation and trajectory id missing from execution status",
         )
         self.assertLessEqual(self._snapshot("_command").linear.x, 1.5)

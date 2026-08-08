@@ -636,10 +636,13 @@ class LocalMappingNode {
     }
 
     try {
+      if (distance(samples.front(), latest_odom_position_) > 0.0L) {
+        samples.insert(samples.begin(), latest_odom_position_);
+      }
       const SweepResult result = voxel_map_->validateSweptVolume(
           samples, config_.vehicle_horizontal_radius,
           config_.vehicle_vertical_radius, config_.trajectory_safety_margin,
-          now.toSec());
+          now.toSec(), latest_odom_position_);
       if (!result.valid) {
         return reject(result.fault == SweepFault::UNKNOWN ? "UNKNOWN"
                                                           : "OCCUPIED");

@@ -396,6 +396,30 @@ TEST(VoxelMap, SweptVolumeRejectsUnknownStaticAndDynamicOccupancy) {
   EXPECT_EQ(SweepFault::OCCUPIED, dynamic_result.fault);
 }
 
+TEST(VoxelMap, SweptVolumeTrustsOnlyUnknownInitialPoseEnvelope) {
+  VoxelMap map(0.2, 1, 1, 1.0);
+  const Vec3 trusted_start{0.0, 0.0, 3.0};
+
+  const auto inside_initial_envelope = map.validateSweptVolume(
+      {{0.0, 0.0, 3.0}, {0.1, 0.0, 3.0}}, 0.0, 0.0, 0.0, 0.0,
+      trusted_start);
+  EXPECT_TRUE(inside_initial_envelope.valid);
+  EXPECT_EQ(SweepFault::NONE, inside_initial_envelope.fault);
+
+  const auto leaves_initial_envelope = map.validateSweptVolume(
+      {{0.0, 0.0, 3.0}, {0.3, 0.0, 3.0}}, 0.0, 0.0, 0.0, 0.0,
+      trusted_start);
+  EXPECT_FALSE(leaves_initial_envelope.valid);
+  EXPECT_EQ(SweepFault::UNKNOWN, leaves_initial_envelope.fault);
+
+  map.integrateDynamicPoint(trusted_start, 0.0);
+  const auto occupied_start = map.validateSweptVolume(
+      {{0.0, 0.0, 3.0}, {0.1, 0.0, 3.0}}, 0.0, 0.0, 0.0, 0.0,
+      trusted_start);
+  EXPECT_FALSE(occupied_start.valid);
+  EXPECT_EQ(SweepFault::OCCUPIED, occupied_start.fault);
+}
+
 TEST(VoxelMap, SweptVolumeRejectsOccupiedVoxelBoxCornerIntersection) {
   VoxelMap map(1.0, 1, 1, 1.0);
   for (const Vec3& origin : std::vector<Vec3>{{0.5, 0.5, 0.5},

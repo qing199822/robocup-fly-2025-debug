@@ -1,0 +1,130 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="fault_test_camera_tf"
+        args="0 0 0 0.5 0.5 0.5 0.5 base_link test_camera"/>
+
+  <node pkg="local_mapping" type="local_mapping_node"
+        name="fault_test_local_mapping" required="true" output="screen">
+    <param name="depth_topic" value="/fault/depth"/>
+    <param name="camera_info_topic" value="/fault/camera_info"/>
+    <param name="odom_topic" value="/fault/odom"/>
+    <param name="bounding_boxes_topic" value="/fault/boxes"/>
+    <param name="planner_depth_topic" value="/fault/planner_depth"/>
+    <param name="planner_pose_topic" value="/fault/planner_pose"/>
+    <param name="validate_trajectory_service" value="/fault/validate"/>
+    <param name="task_generation_topic" value="/fault/generation"/>
+    <param name="static_cloud_topic" value="/fault/static_cloud"/>
+    <param name="dynamic_cloud_topic" value="/fault/dynamic_cloud"/>
+    <param name="health_topic" value="/fault/health"/>
+    <param name="clearance_topic" value="/fault/map_clearance"/>
+    <param name="frontier_goal_topic" value="/fault/frontier"/>
+    <param name="max_sync_delta" value="0.10"/>
+    <param name="depth_timeout" value="0.20"/>
+    <param name="odom_timeout" value="0.20"/>
+    <param name="recovery_window" value="0.15"/>
+    <param name="min_valid_depth_ratio" value="0.20"/>
+    <param name="depth_min_m" value="0.20"/>
+    <param name="depth_max_m" value="8.00"/>
+    <param name="pixel_stride" value="1"/>
+    <param name="mask_margin_pixels" value="0"/>
+    <param name="voxel_resolution" value="0.20"/>
+    <param name="occupied_hits" value="2"/>
+    <param name="free_hits" value="2"/>
+    <param name="dynamic_ttl" value="0.30"/>
+    <param name="publish_rate" value="30.0"/>
+    <param name="search_altitude" value="3.0"/>
+    <param name="max_frontier_distance" value="2.0"/>
+    <param name="frontier_resolution" value="0.20"/>
+    <param name="vehicle_horizontal_radius" value="0.35"/>
+    <param name="vehicle_vertical_radius" value="0.20"/>
+    <param name="trajectory_safety_margin" value="0.10"/>
+    <param name="trajectory_max_age" value="0.50"/>
+    <param name="trajectory_max_future" value="0.20"/>
+    <param name="trajectory_start_tolerance" value="0.75"/>
+    <param name="trajectory_max_sample_gap" value="0.20"/>
+    <param name="min_search_altitude" value="2.00"/>
+    <param name="max_search_altitude" value="4.00"/>
+    <param name="min_frontier_cluster_cells" value="2"/>
+    <param name="max_clearance_distance" value="4.0"/>
+    <param name="base_frame" value="base_link"/>
+    <param name="camera_frame" value="test_camera"/>
+    <param name="tf_timeout" value="0.05"/>
+  </node>
+
+  <node pkg="search_coordinator" type="search_coordinator_node"
+        name="fault_test_search_coordinator" required="true" output="screen">
+    <param name="high_level_goal_topic" value="/fault/high_goal"/>
+    <param name="odom_topic" value="/fault/odom"/>
+    <param name="health_topic" value="/fault/health"/>
+    <param name="frontier_goal_topic" value="/fault/frontier"/>
+    <param name="mission_active_topic" value="/fault/mission_active"/>
+    <param name="takeoff_complete_topic" value="/fault/takeoff_complete"/>
+    <param name="tracking_phase_topic" value="/fault/tracking_phase"/>
+    <param name="mux_selected_topic" value="/fault/mux/selected"/>
+    <param name="adapter_status_topic" value="/fault/adapter_status"/>
+    <param name="validate_trajectory_service"
+           value="/fault/coordinator_validate"/>
+    <param name="ego_goal_topic" value="/fault/ego_goal"/>
+    <param name="generation_topic" value="/fault/generation"/>
+    <param name="status_topic" value="/fault/coordinator_status"/>
+    <param name="navigator_topic" value="/fault/navigator"/>
+    <param name="input_timeout" value="0.20"/>
+    <param name="generation_settle_delay" value="0.05"/>
+    <param name="local_arrival_tolerance" value="0.05"/>
+    <param name="planning_timeout" value="120.0"/>
+  </node>
+
+  <node pkg="ego_adapter" type="ego_adapter_node"
+        name="fault_test_ego_adapter" required="true" output="screen">
+    <rosparam command="load" file="$(find ego_adapter)/config/single_drone.yaml"/>
+    <param name="position_command_topic" value="/fault/position_cmd"/>
+    <param name="bspline_topic" value="/fault/bspline"/>
+    <param name="odom_topic" value="/fault/odom"/>
+    <param name="health_topic" value="/fault/health"/>
+    <param name="clearance_topic" value="/fault/guard_clearance"/>
+    <param name="generation_topic" value="/fault/generation"/>
+    <param name="mux_selected_topic" value="/fault/mux/selected"/>
+    <param name="validate_trajectory_service"
+           value="/fault/adapter_validate"/>
+    <param name="command_topic" value="/fault/navigator"/>
+    <param name="status_topic" value="/fault/adapter_status"/>
+    <param name="navigator_topic" value="/fault/navigator"/>
+    <param name="command_timeout" value="0.20"/>
+    <param name="health_timeout" value="0.20"/>
+    <param name="odom_timeout" value="0.20"/>
+    <param name="trajectory_revalidate_period" value="0.10"/>
+    <param name="map_response_timeout" value="0.20"/>
+  </node>
+
+  <node pkg="topic_tools" type="mux" name="fault_mux"
+        args="/fault/raw /fault/takeoff /fault/navigator /fault/external mux:=/fault/mux">
+    <param name="initial_topic" value="/fault/navigator"/>
+  </node>
+
+  <node pkg="safety_filter" type="safety_filter_node"
+        name="fault_test_safety_filter" required="true" output="screen">
+    <rosparam command="load" file="$(find safety_filter)/config/default.yaml"/>
+    <param name="raw_command_topic" value="/fault/raw"/>
+    <param name="odom_topic" value="/fault/odom"/>
+    <param name="final_command_topic" value="/fault/final"/>
+    <param name="status_topic" value="/fault/safety_status"/>
+    <param name="perception_guard_enabled" value="true"/>
+    <param name="health_topic" value="/fault/health"/>
+    <param name="clearance_topic" value="/fault/guard_clearance"/>
+    <param name="mux_selected_topic" value="/fault/mux/selected"/>
+    <param name="takeoff_topic" value="/fault/takeoff"/>
+    <param name="navigator_topic" value="/fault/navigator"/>
+    <param name="external_topic" value="/fault/external"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="command_timeout" value="0.20"/>
+    <param name="odom_timeout" value="0.20"/>
+    <param name="perception_timeout" value="0.20"/>
+    <param name="perception_recovery_time" value="0.15"/>
+    <param name="max_xy_acceleration" value="100.0"/>
+    <param name="max_z_acceleration" value="100.0"/>
+  </node>
+
+  <test test-name="ego_single_faults" pkg="ego_adapter"
+        type="test_ego_single_faults.py" time-limit="90"/>
+</launch>
