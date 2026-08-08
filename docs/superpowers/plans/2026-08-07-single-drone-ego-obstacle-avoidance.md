@@ -99,8 +99,8 @@ class EgoExternalContractTest(unittest.TestCase):
         self.assertTrue(CHECK.is_file())
         text = CHECK.read_text(encoding="utf-8")
         self.assertIn("92fe9f7227b2da819133eb8e0e8c7fc000f6ae20", text)
-        self.assertIn("quadrotor_msgs/msg/PositionCommand.msg", text)
-        self.assertIn("traj_utils/msg/Bspline.msg", text)
+        self.assertIn("src/uav_simulator/Utils/quadrotor_msgs/msg/PositionCommand.msg", text)
+        self.assertIn("src/planner/traj_utils/msg/Bspline.msg", text)
 
 
 if __name__ == "__main__":
@@ -144,25 +144,25 @@ import sys
 
 PIN = "92fe9f7227b2da819133eb8e0e8c7fc000f6ae20"
 REQUIRED = (
-    "src/quadrotor_msgs/msg/PositionCommand.msg",
-    "src/traj_utils/msg/Bspline.msg",
+    "src/uav_simulator/Utils/quadrotor_msgs/msg/PositionCommand.msg",
+    "src/planner/traj_utils/msg/Bspline.msg",
     "src/planner/plan_manage/launch/single_run_in_sim.launch",
     "src/planner/plan_manage/launch/advanced_param.xml",
 )
 
 REQUIRED_FIELDS = {
-    "src/quadrotor_msgs/msg/PositionCommand.msg": (
-        "std_msgs/Header header",
+    "src/uav_simulator/Utils/quadrotor_msgs/msg/PositionCommand.msg": (
+        "Header header",
         "geometry_msgs/Point position",
         "geometry_msgs/Vector3 velocity",
         "geometry_msgs/Vector3 acceleration",
         "float64 yaw",
         "float64 yaw_dot",
     ),
-    "src/traj_utils/msg/Bspline.msg": (
+    "src/planner/traj_utils/msg/Bspline.msg": (
         "int32 order",
         "time start_time",
-        "uint64 traj_id",
+        "int64 traj_id",
         "geometry_msgs/Point[] pos_pts",
         "float64[] knots",
     ),
@@ -225,8 +225,8 @@ Run:
 
 ```bash
 python3 scripts/check_ego_external.py
-sed -n '1,200p' /home/wangtao/robocup_fly/external/ego-planner-swarm/src/quadrotor_msgs/msg/PositionCommand.msg
-sed -n '1,200p' /home/wangtao/robocup_fly/external/ego-planner-swarm/src/traj_utils/msg/Bspline.msg
+sed -n '1,200p' /home/wangtao/robocup_fly/external/ego-planner-swarm/src/uav_simulator/Utils/quadrotor_msgs/msg/PositionCommand.msg
+sed -n '1,200p' /home/wangtao/robocup_fly/external/ego-planner-swarm/src/planner/traj_utils/msg/Bspline.msg
 rg -n "odom_world|grid_map/depth|grid_map/pose|move_base_simple/goal|position_cmd|broadcast_bspline" \
   /home/wangtao/robocup_fly/external/ego-planner-swarm/src
 ```
@@ -776,15 +776,15 @@ Expected: `ERROR`，可执行文件不存在。
 
 Bspline 到达后按上游 `order`、`knots`、`pos_pts` 和 `start_time` 用标准 De Boor 递推求值，从当前时刻到轨迹末端按 `0.10s` 采样，并调用 `ValidateTrajectory`。先用夹持均匀二次 B-spline 的直线控制点写纯 C++ 单元测试，断言起点、中点、终点和越界时间；再把已核对的上游消息字段转换为该纯采样器输入。
 
-任务代次握手不能假设 EGO 消息带队伍 generation。每次 generation 变化时 adapter 必须：
+任务代次握手不能假设 EGO 消息带队伍 generation。上游 `traj_id` 是有符号 `int64 traj_id`；adapter 内部比较和缓存必须保持有符号64位，禁止转为无符号后比较，以防负值绕回。每次 generation 变化时 adapter 必须：
 
-1. 记录 `generation_started_at_` 和变化前见过的最大 `traj_id`；
+1. 记录 `generation_started_at_` 和变化前见过的最大上游 `traj_id`（有符号64位）；
 2. 清除全部命令、曲线和验证结果并立即输出零；
-3. 只接受 `traj_id` 更大且 `start_time >= generation_started_at_ - 0.05s` 的新 Bspline；
-4. 验证通过后把 `(active_generation, traj_id)` 绑定为唯一执行对；
+3. 只接受按有符号64位比较时 `traj_id` 更大且 `start_time >= generation_started_at_ - 0.05s` 的新 Bspline；
+4. 验证通过后把 `(active_generation, int64 traj_id)` 绑定为唯一执行对；
 5. 只接受 header stamp 晚于 Bspline 接收时刻，且 position/velocity 与绑定曲线在该 stamp 的采样误差分别不超过 `0.30m/0.50m/s` 的 PositionCommand。
 
-这使 tracking 前缓存的旧曲线和仍在发布的旧 PositionCommand 无法伪装成新代次。rostest 必须注入“更旧 traj_id”“新 traj_id 但旧 start_time”“新 stamp 但位置不在绑定曲线上”三类消息并断言全部归零。
+这使 tracking 前缓存的旧曲线和仍在发布的旧 PositionCommand 无法伪装成新代次。rostest 必须注入“按有符号64位比较更旧的 traj_id”“新 traj_id 但旧 start_time”“新 stamp 但位置不在绑定曲线上”三类消息并断言全部归零。
 
 轨迹不能只校验一次。adapter 以10Hz重采样“当前 odom 到曲线终点”的剩余段；只要 `health.header.stamp` 晚于上一次 response `map_stamp`、动态人物层 TTL 变化、当前位姿偏离曲线超过0.50米或达到0.10秒周期，就先令 `trajectory_valid_=false` 再调用服务。只有新 response generation 匹配、map_stamp 不旧于请求时观察到的 health stamp 且 valid 才恢复输出；新增障碍导致拒绝时保持零并发布 `TRAJECTORY_REJECTED`。
 
