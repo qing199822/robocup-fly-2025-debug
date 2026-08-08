@@ -42,6 +42,10 @@ ACTOR_COPY = ROOT / "src/gazebo_ros_actor_plugin"
 
 TEAM_ENTRIES = {
     "src/competition_compliance": ("0.1.0", "LicenseRef-Team-Code"),
+    "src/ego_fusion_search/ego_adapter": (
+        "0.1.0",
+        "LicenseRef-Team-Code",
+    ),
     "src/ego_fusion_search/local_mapping": (
         "0.1.0",
         "LicenseRef-Team-Code",
@@ -51,6 +55,10 @@ TEAM_ENTRIES = {
         "LicenseRef-Team-Code",
     ),
     "src/ego_fusion_search/search_msgs": (
+        "0.1.0",
+        "LicenseRef-Team-Code",
+    ),
+    "src/ego_fusion_search/search_coordinator": (
         "0.1.0",
         "LicenseRef-Team-Code",
     ),

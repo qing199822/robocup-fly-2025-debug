@@ -61,6 +61,7 @@ git remote -v
 ~/robocup_fly/PX4_Firmware
 ~/robocup_fly/XTDrone
 ~/robocup_fly/gazebo_models
+~/robocup_fly/external/ego-planner-swarm
 ~/robocup_fly/.xtdrone-python
 ~/robocup_fly/.venv-yolo
 ```
@@ -110,7 +111,9 @@ git remote -v
 | `src/tracking` | 目标跟踪状态机、滤波、平滑和控制命令 |
 | `src/ego_fusion_search/safety_filter` | 最终速度看门狗、限幅和发布者唯一性边界 |
 | `src/ego_fusion_search/search_msgs` | 队伍局部地图健康与净空度消息 |
-| `src/ego_fusion_search/local_mapping` | 0 号机深度同步、人物语义过滤、局部体素地图、健康、净空度与前沿候选输出；尚未接入 EGO 或控制链 |
+| `src/ego_fusion_search/local_mapping` | 0 号机深度同步、人物语义过滤、局部体素地图、健康、净空度、前沿候选和轨迹扫掠验证；EGO 模式唯一占据事实来源 |
+| `src/ego_fusion_search/search_coordinator` | 只为 0 号机选择已知空闲局部目标并发布任务 generation，不发布飞行控制命令 |
+| `src/ego_fusion_search/ego_adapter` | 校验外部 EGO 轨迹与速度命令，只发布既有 navigator MUX 输入 |
 | `src/transform_tree` | 队伍需要的动态 TF 发布 |
 | `src/yolo` | 六路检测、深度与 CameraInfo 匹配、三维坐标解算 |
 | `waypoint` | 可见任务入口、地图和路线辅助数据；`mission_down.json` 是指向包内权威文件的链接 |
@@ -148,12 +151,12 @@ Realsense RGB
 控制命令必须依次经过 MUX 和后置安全过滤：
 
 ```text
-fly_takeoff -> takeoff input --------+
-simple_navigator -> navigator input -+-> pose_cmd_mux -> raw_cmd_vel
-tracking -> external input ----------+                     |
-                                                        safety_filter
-                                                             |
-                                          XTDrone cmd_vel_flu (唯一发布者)
+fly_takeoff -> takeoff input -------------------------------+
+static_patrol: simple_navigator -> navigator input ---------+-> pose_cmd_mux -> raw_cmd_vel
+ego: EGO -> ego_adapter -> navigator input -----------------+                     |
+tracking -> external input ---------------------------------+                safety_filter
+                                                                                  |
+                                                               XTDrone cmd_vel_flu (唯一发布者)
 ```
 
 起飞节点先选择 takeoff；六机全部成功并发送零速度、HOVER 后才选择 navigator。任何起飞未完成或部分交权失败都保持或回滚到零速度 takeoff。跟踪通过现有 MUX 服务在 external 与 navigator 之间切换。
@@ -166,7 +169,9 @@ tracking -> external input ----------+                     |
 
 `src/mix_nav/task_manager/launch/mission_down.json` 是运行时唯一权威文件。根目录 `waypoint/mission_down.json` 只是指向它的相对符号链接。当前六机分别负责西南、南中、东南、西北、北中、东北区域；自动化几何契约保证固定任务在起飞区外的跨机中心线净空不小于 5 米。该保证不覆盖跟踪和未来 EGO 动态改路，它们仍需动态避碰。
 
-未来的 EGO adapter 只能替换 `simple_navigator`，成为既有 navigator 输入的唯一发布者。它不得新增第四路 MUX 输入，也不得直接发布最终 XTDrone 速度话题。最终 `/xtdrone/typhoon_h480_N/cmd_vel_flu` 的队伍发布者必须始终且仅为 `/typhoon_h480_N/safety_filter`；可用 `python3 scripts/check_final_control_publishers.py` 检查。
+当前 EGO 接线只覆盖 `typhoon_h480_0`。EGO-Planner-Swarm 固定在仓库外，按 GPL-3.0 作为只读运行依赖；必须由 `scripts/check_ego_external.py` 核验固定提交和干净工作树，不能把其源码复制进本仓库或为兼容本项目而修改它。`search_coordinator` 只发布局部目标和 generation，`local_mapping` 是唯一占据事实来源，`ego_adapter` 只能替换 `simple_navigator` 并发布既有 navigator MUX 输入。它不得新增第四路 MUX 输入，也不得直接发布最终 XTDrone 速度话题。
+
+`navigation_mode:=static_patrol` 保留原六机固定巡逻；`navigation_mode:=ego` 只启动 0 号机的地图、协调器和适配器。`layered_2d` 仍未实现，启动器会明确拒绝，不能静默降级。当前不得声称双机或六机 EGO 已跑通，也不得把自动化接线测试描述成 Gazebo 绕障验收。最终 `/xtdrone/typhoon_h480_N/cmd_vel_flu` 的队伍发布者必须始终且仅为 `/typhoon_h480_N/safety_filter`；可用 `python3 scripts/check_final_control_publishers.py` 检查。
 
 清理链路：
 
